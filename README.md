@@ -95,3 +95,7 @@ python3 -m unittest discover -s tests -t .
 ```
 
 The suite runs against an in-process fake Ollama server; it needs no network or models.
+
+## License
+
+[MIT](LICENSE)
