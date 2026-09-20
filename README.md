@@ -37,9 +37,32 @@ acc skills [NAME]            acc models
 ```
 
 Inside a chat, `/help` lists the commands: session management (`/new /sessions /switch /rename
-/fork /delete /export`), skills (`/skills`, `/skill add|rm`), prompt (`/system`, `/context`),
+/fork /delete /export`), skills (`/skills`, `/skill add|rm`), prompt (`/system`, `/context`, `/files`),
 model (`/model`, `/set`, `/think`), and conversation editing (`/retry /edit /undo /compact`).
 Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
+
+## Files
+
+Name a path in your message and its contents are sent along with it:
+
+```
+>>> what does ~/notes/plan.md say about the budget?
+attached ~/notes/plan.md (text, 3.1 KB)
+```
+
+- A word is treated as a path when it **exists** and starts with `/` or `~`, or contains a `/`
+  (`./notes.md`, `src/main.py`). For a bare filename in the current directory, write `@notes.md`.
+  Paths with spaces work quoted (`"my file.txt"`) or escaped (`my\ file.txt`, which is what
+  dragging a file into the terminal types). Tab completes paths.
+- **Text files** are inlined (the first 256 KB of larger ones, and you're told when that happens).
+  **Images** (png, jpg, webp, gif) go to models with vision; other models get a warning instead.
+  A **directory** becomes a listing of its entries. Other binary files, PDFs included, are refused.
+- The file is **snapshotted when you send the message** and stays in the conversation from then
+  on, so later turns can refer to it and the history always matches what the model really saw.
+  Name the path again to send its current contents. `/files` lists what a conversation holds.
+- This is not a tool the model can call. Only a path that *you type* is ever read: nothing in a
+  skill or in the model's output can make `acc` open a file.
+- It works in one-shots too: `acc ask "review ./diff.patch"`.
 
 ## Skills
 

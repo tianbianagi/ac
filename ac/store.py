@@ -57,7 +57,22 @@ CREATE TRIGGER messages_au AFTER UPDATE OF content ON messages BEGIN
 END;
 """
 
-SCHEMA_VERSION = 1
+ATTACHMENTS_SCHEMA = """
+CREATE TABLE attachments (
+    id         INTEGER PRIMARY KEY,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    position   INTEGER NOT NULL,
+    path       TEXT NOT NULL,
+    kind       TEXT NOT NULL,   -- text | image | directory
+    content    TEXT,            -- text and directory listings
+    data       BLOB,            -- image bytes
+    note       TEXT             -- e.g. how much of a large file was kept
+);
+CREATE INDEX attachments_message ON attachments(message_id);
+"""
+
+# MIGRATIONS[n] upgrades a database from user_version n to n + 1.
+MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA]
 
 
 class StoreError(Exception):
@@ -89,6 +104,20 @@ class Session:
 
 
 @dataclass
+class Attachment:
+    """A file's contents as they were when the message was sent."""
+    path: str
+    kind: str
+    content: str | None = None
+    data: bytes | None = None
+    note: str | None = None
+
+    @property
+    def size(self):
+        return len(self.data) if self.data is not None else len((self.content or "").encode())
+
+
+@dataclass
 class Message:
     id: int
     session_id: str
@@ -103,6 +132,7 @@ class Message:
     eval_tokens: int | None = None
     duration_ms: int | None = None
     created_at: str | None = None
+    attachments: list = field(default_factory=list)
 
 
 def _now():
@@ -134,15 +164,15 @@ class Store:
 
     def _migrate(self):
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version >= SCHEMA_VERSION:
-            return
-        self.db.executescript(SCHEMA)
-        try:
-            self.db.executescript(FTS_SCHEMA)
-        except sqlite3.OperationalError:
-            pass  # SQLite built without FTS5: search falls back to LIKE
-        self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        self.db.commit()
+        for step in range(version, len(MIGRATIONS)):
+            self.db.executescript(MIGRATIONS[step])
+            if step == 0:
+                try:
+                    self.db.executescript(FTS_SCHEMA)
+                except sqlite3.OperationalError:
+                    pass  # SQLite built without FTS5: search falls back to LIKE
+            self.db.execute(f"PRAGMA user_version = {step + 1}")
+            self.db.commit()
 
     # -- sessions ---------------------------------------------------------
 
@@ -247,13 +277,21 @@ class Store:
                           eval_tokens, duration_ms, created_at
                    FROM messages WHERE session_id = ? AND seq <= ? ORDER BY seq""",
                 (new.id, src.id, at_seq))
+            self.db.execute(
+                """INSERT INTO attachments (message_id, position, path, kind, content, data, note)
+                   SELECT copy.id, a.position, a.path, a.kind, a.content, a.data, a.note
+                   FROM attachments a
+                   JOIN messages orig ON orig.id = a.message_id
+                   JOIN messages copy ON copy.session_id = ? AND copy.seq = orig.seq
+                   WHERE orig.session_id = ? AND orig.seq <= ?""",
+                (new.id, src.id, at_seq))
         return self.get(new.id)
 
     # -- messages ---------------------------------------------------------
 
     def add_message(self, session_id, role, content, *, thinking=None, status="complete",
                     model=None, skills=None, prompt_tokens=None, eval_tokens=None,
-                    duration_ms=None):
+                    duration_ms=None, attachments=()):
         now = _now()
         with self.db:
             seq = self.db.execute(
@@ -266,16 +304,29 @@ class Store:
                 (session_id, seq, role, content, thinking, status, model,
                  json.dumps(skills) if skills is not None else None,
                  prompt_tokens, eval_tokens, duration_ms, now))
+            self.db.executemany(
+                """INSERT INTO attachments (message_id, position, path, kind, content, data, note)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [(cur.lastrowid, i, a.path, a.kind, a.content, a.data, a.note)
+                 for i, a in enumerate(attachments)])
             self.db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
         return Message(id=cur.lastrowid, session_id=session_id, seq=seq, role=role,
                        content=content, thinking=thinking, status=status, model=model,
                        skills=skills, prompt_tokens=prompt_tokens, eval_tokens=eval_tokens,
-                       duration_ms=duration_ms, created_at=now)
+                       duration_ms=duration_ms, created_at=now, attachments=list(attachments))
 
     def messages(self, session_id):
+        attached = {}
+        for a in self.db.execute(
+                """SELECT a.* FROM attachments a JOIN messages m ON m.id = a.message_id
+                   WHERE m.session_id = ? ORDER BY a.message_id, a.position""", (session_id,)):
+            attached.setdefault(a["message_id"], []).append(Attachment(
+                path=a["path"], kind=a["kind"], content=a["content"], data=a["data"],
+                note=a["note"]))
         rows = self.db.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY seq", (session_id,))
-        return [Message(**{**dict(r), "skills": json.loads(r["skills"]) if r["skills"] else None})
+        return [Message(**{**dict(r), "skills": json.loads(r["skills"]) if r["skills"] else None,
+                           "attachments": attached.get(r["id"], [])})
                 for r in rows]
 
     def delete_messages_from(self, session_id, seq):

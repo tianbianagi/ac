@@ -23,7 +23,8 @@ class Client:
     def _open(self, path, payload=None, timeout=10):
         data = json.dumps(payload).encode() if payload is not None else None
         if config.debug() and payload is not None:
-            print(f"[ac] POST {path} {json.dumps(payload, indent=2)}", file=sys.stderr)
+            print(f"[ac] POST {path} {json.dumps(_redact_images(payload), indent=2)}",
+                  file=sys.stderr)
         req = urllib.request.Request(self.host + path, data=data,
                                      headers={"Content-Type": "application/json"})
         try:
@@ -108,6 +109,12 @@ class Client:
             raise OllamaError(f"stream from Ollama failed: {e}") from None
         finally:
             resp.close()
+
+
+def _redact_images(payload):
+    messages = [{**m, "images": [f"<{len(i)} base64 chars>" for i in m["images"]]}
+                if "images" in m else m for m in payload.get("messages", [])]
+    return {**payload, "messages": messages} if messages else payload
 
 
 def resolve_model(client, name):

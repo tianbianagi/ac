@@ -2,9 +2,10 @@
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 
-from . import skills
+from . import files, skills
 
 
 def use_color(stream):
@@ -145,7 +146,9 @@ def format_sessions(sessions, style, current_id=None):
 
 def format_message(msg, style, thinking=False):
     if msg.role == "user":
-        return style.bold(style.cyan(">>> ")) + msg.content
+        lines = [style.bold(style.cyan(">>> ")) + msg.content]
+        lines += [style.dim(f"    attached {files.describe(a)}") for a in msg.attachments]
+        return "\n".join(lines)
     parts = []
     if thinking and msg.thinking:
         parts.append(style.dim(msg.thinking.strip()))
@@ -168,7 +171,17 @@ def to_markdown(session, messages, thinking=False):
             lines += ["<details><summary>thinking</summary>", "", m.thinking.strip(), "",
                       "</details>", ""]
         lines.append(m.content)
+        for a in m.attachments:
+            lines += ["", f"<details><summary>attached: {files.describe(a)}</summary>", ""]
+            if a.kind != "image":
+                fence = "`" * max(3, _longest_backtick_run(a.content) + 1)
+                lines += [fence, a.content, fence, ""]
+            lines.append("</details>")
     return "\n".join(lines) + "\n"
+
+
+def _longest_backtick_run(text):
+    return max((len(run) for run in re.findall(r"`+", text)), default=0)
 
 
 def to_json(session, messages):
@@ -179,5 +192,8 @@ def to_json(session, messages):
         "system": session.system, "options": session.options, "skills": session.skills,
         "parent_id": session.parent_id, "forked_at_seq": session.forked_at_seq,
         "created_at": session.created_at, "updated_at": session.updated_at,
-        "messages": [{k: getattr(m, k) for k in keep} for m in messages],
+        "messages": [{**{k: getattr(m, k) for k in keep},
+                      "attachments": [{"path": a.path, "kind": a.kind, "bytes": a.size,
+                                       "note": a.note, "content": a.content}
+                                      for a in m.attachments]} for m in messages],
     }, indent=2, ensure_ascii=False) + "\n"

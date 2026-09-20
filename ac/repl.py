@@ -1,6 +1,7 @@
 """The interactive chat loop and its slash commands."""
 
 import atexit
+import base64
 import difflib
 import json
 import os
@@ -10,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import config, render, skills
+from . import config, files, render, skills
 from .ollama import OllamaError, resolve_model
 from .store import StoreError
 
@@ -40,6 +41,7 @@ Skills and prompt
   /skill rm NAME          detach a skill
   /system [TEXT|clear]    show, set or clear this session's own system text
   /context                show token usage and the exact system prompt being sent
+  /files                  list the files attached in this conversation
 Model
   /model [NAME|NUMBER]    list models, or switch this session to another one
   /set KEY [VALUE]        set a model option (temperature, num_ctx, ...); no VALUE unsets
@@ -50,6 +52,8 @@ Conversation
   /undo                   drop the last exchange
   /compact                continue in a new session seeded with a summary of this one
   /help  /quit
+Files: name a path in your message (/abs, ~/home, ./relative, or @name for a bare filename) and
+its contents are sent along: text files, images (for models with vision) and directory listings.
 Input: wrap multi-line text in \"\"\" ... \"\"\". Start a message with // to send a leading /.
 Ctrl-C stops a reply (the partial text is kept); Ctrl-D quits."""
 
@@ -59,16 +63,25 @@ def make_title(text, width=60):
     return text if len(text) <= width else text[:width - 1].rstrip() + "…"
 
 
-def build_messages(system, messages):
-    """The payload for Ollama: usable turns only, never thinking, same-role neighbours merged."""
+def build_messages(system, messages, vision=True):
+    """The payload for Ollama: usable turns only, never thinking, same-role neighbours merged.
+
+    Attached files go in front of the text of the message they came with; images are left out
+    for a model that can't see them.
+    """
     payload = [{"role": "system", "content": system}] if system else []
     for m in messages:
         if m.status == "error" or not m.content.strip():
             continue
+        shown = [a for a in m.attachments if vision or a.kind != "image"]
+        content = "\n\n".join([files.for_model(a) for a in shown] + [m.content])
+        images = [base64.b64encode(a.data).decode() for a in shown if a.kind == "image"]
         if payload and payload[-1]["role"] == m.role and m.role != "system":
-            payload[-1]["content"] += "\n\n" + m.content
+            payload[-1]["content"] += "\n\n" + content
         else:
-            payload.append({"role": m.role, "content": m.content})
+            payload.append({"role": m.role, "content": content})
+        if images:
+            payload[-1].setdefault("images", []).extend(images)
     return payload
 
 
@@ -160,7 +173,7 @@ class Repl:
         """Process one input. Returns False when the REPL should exit."""
         if line.startswith("//"):
             line = line[1:]
-        elif line.startswith("/"):
+        elif line.startswith("/") and "/" not in line[1:].split(" ", 1)[0]:
             name, _, arg = line[1:].partition(" ")
             command = getattr(self, f"cmd_{name.lower()}", None)
             if command is None:
@@ -187,7 +200,12 @@ class Repl:
         if not s.persisted:
             s.title = s.title or make_title(text)
             self.store.save(s)
-        self.store.add_message(s.id, "user", text)
+        attachments, problems = files.collect(text)
+        for problem in problems:
+            self.warn(problem)
+        for attachment in attachments:
+            self.note(f"attached {files.describe(attachment)}")
+        self.store.add_message(s.id, "user", text, attachments=attachments)
         return self.generate()
 
     def _stream(self, payload):
@@ -224,7 +242,7 @@ class Repl:
         system, active, missing = skills.compose_system(s.system, s.skills)
         for ref in missing:
             self.warn(f"skill '{skills.label(ref)}' can't be loaded; continuing without it")
-        payload = build_messages(system, self.store.messages(s.id))
+        payload = build_messages(system, *self._visible(self.store.messages(s.id)))
         content, thinking, stats, status, error = self._stream(payload)
 
         message = None
@@ -242,6 +260,14 @@ class Repl:
         elif not self.quiet:
             self._after_reply(stats, active)
         return message
+
+    def _visible(self, messages):
+        """(messages, vision) for build_messages, warning when images have to be left out."""
+        images = sum(a.kind == "image" for m in messages for a in m.attachments)
+        vision = not images or self.client.supports(self.session.model, "vision")
+        if not vision:
+            self.warn(f"{self.session.model} can't see images; leaving {images} out")
+        return messages, vision
 
     def report(self, error):
         self.error(str(error))
@@ -396,6 +422,16 @@ class Repl:
         self._changed()
         self.note("system text cleared" if arg == "clear" else "system text set")
 
+    def cmd_files(self, arg):
+        attached = [(m, a) for m in self.store.messages(self.session.id) for a in m.attachments]
+        if not attached:
+            return self.note("no files in this conversation. Name a path in a message "
+                             "(/path, ~/path, ./path or @name) and it is read and sent along.")
+        for m, a in attached:
+            self.say(f"#{m.seq}  {files.describe(a)}")
+        self.note("these are snapshots from when each message was sent; name a path again to "
+                  "send its current contents")
+
     def cmd_context(self, arg):
         s = self.session
         system, active, missing = skills.compose_system(s.system, s.skills)
@@ -509,9 +545,8 @@ class Repl:
         if not text or text == last.content.strip():
             return self.note("unchanged; nothing sent.")
         self.store.delete_messages_from(self.session.id, last.seq)
-        self.say(render.format_message(self.store.add_message(self.session.id, "user", text),
-                                       self.style))
-        self.generate()
+        self.say(self.style.bold(self.style.cyan(">>> ")) + text)
+        self.send(text)  # named files are read again, as they are now
 
     def cmd_compact(self, arg):
         if not self._require_saved("compact"):
@@ -519,7 +554,8 @@ class Repl:
         s = self.session
         messages = self.store.messages(s.id)
         system, _, _ = skills.compose_system(s.system, s.skills)
-        payload = build_messages(system, messages) + [{"role": "user", "content": COMPACT_PROMPT}]
+        payload = build_messages(system, *self._visible(messages))
+        payload.append({"role": "user", "content": COMPACT_PROMPT})
         self.note("summarizing…")
         summary, _, _, status, error = self._stream(payload)
         if status != "complete" or not summary.strip():
@@ -538,11 +574,17 @@ class Repl:
 
     def completions(self, buffer):
         """Candidates for the word being typed, given the whole input line so far."""
-        if not buffer.startswith("/"):
-            return []
         words = buffer.split(" ")
-        if len(words) == 1:
-            return [f"/{n}" for n in self.command_names() if f"/{n}".startswith(words[0])]
+        last = words[-1]
+        is_command = buffer.startswith("/") and "/" not in words[0][1:]
+        if is_command and len(words) == 1:
+            commands = [f"/{n}" for n in self.command_names() if f"/{n}".startswith(last)]
+            if commands:
+                return commands
+        if last.startswith(("/", "~", "./", "../", "@")):
+            return files.complete(last)  # a path, in a message or as a command's argument
+        if not is_command or len(words) == 1:
+            return []
         command, prefix = words[0][1:], words[-1]
         try:
             if command == "skill" and len(words) == 2:

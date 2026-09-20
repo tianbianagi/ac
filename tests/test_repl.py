@@ -9,7 +9,7 @@ from unittest import mock
 from ac.ollama import Client
 from ac.render import Style
 from ac.repl import SUMMARY_HEADER, Repl, build_messages, make_title
-from ac.store import Message, Store
+from ac.store import Attachment, Message, Store
 from tests.fake_ollama import FakeOllama
 from tests.test_skills import write_skill
 
@@ -36,6 +36,27 @@ class BuildMessagesTest(unittest.TestCase):
             {"role": "user", "content": "q2\n\nq3"},  # neighbours merged after the skip
             {"role": "assistant", "content": "partial"}])
         self.assertNotIn("secret", json.dumps(payload))
+
+    def test_attachments_in_payload(self):
+        note = Attachment("/n.md", "text", content="persimmons")
+        pic = Attachment("/p.png", "image", data=b"\x89PNG")
+        first = msg("user", "what is this?")
+        first.attachments = [note, pic]
+        payload = build_messages(None, [first, msg("assistant", "a note"), msg("user", "and?")])
+        self.assertEqual(payload[0], {
+            "role": "user", "images": ["iVBORw=="],
+            "content": '<file path="/n.md">\npersimmons\n</file>\n\n<image path="/p.png"/>'
+                       "\n\nwhat is this?"})
+        self.assertEqual(payload[2], {"role": "user", "content": "and?"})  # sent once, not per turn
+
+        blind = build_messages(None, [first], vision=False)
+        self.assertEqual(blind, [{"role": "user", "content":
+                                  '<file path="/n.md">\npersimmons\n</file>\n\nwhat is this?'}])
+
+        second = msg("user", "one more")
+        second.attachments = [pic]
+        merged = build_messages(None, [first, second])  # neighbours merge, images included
+        self.assertEqual((len(merged), len(merged[0]["images"])), (1, 2))
 
     def test_make_title(self):
         self.assertEqual(make_title("  hello\n world "), "hello world")
@@ -147,6 +168,89 @@ class ReplTest(unittest.TestCase):
         self.assertIn("skill 'temp' can't be loaded; continuing without it", out)
         self.assertEqual(self.fake.requests[-1]["messages"][0]["role"], "user")
         self.assertEqual(self.repl.session.skills, ["temp"])  # stays attached
+
+    # -- files ------------------------------------------------------------
+
+    def test_named_file_is_read_and_sent(self):
+        note = self.tmp / "notes.md"
+        note.write_text("the code word is persimmon")
+        out = self.run_lines(f"what is the code word in {note}?", "and again?")
+        self.assertIn(f"attached {note} (text, 26 B)", out)
+        first, second = (r["messages"] for r in self.fake.requests)
+        self.assertEqual(first[0]["content"], f'<file path="{note}">\nthe code word is persimmon\n'
+                                              f"</file>\n\nwhat is the code word in {note}?")
+        self.assertEqual(second[0]["content"], first[0]["content"])  # still in context next turn
+        stored = self.store.messages(self.repl.session.id)[0]
+        self.assertEqual(stored.content, f"what is the code word in {note}?")  # as typed
+        self.assertEqual(stored.attachments[0].content, "the code word is persimmon")
+
+    def test_file_is_a_snapshot_until_named_again(self):
+        note = self.tmp / "notes.md"
+        note.write_text("version one")
+        self.run_lines(f"read {note}")
+        note.write_text("version two")
+        self.run_lines("what did it say?")
+        self.assertIn("version one", self.fake.requests[-1]["messages"][0]["content"])
+        self.assertNotIn("version two", json.dumps(self.fake.requests[-1]))
+        self.run_lines(f"read {note} again")
+        self.assertIn("version two", self.fake.requests[-1]["messages"][-1]["content"])
+
+    def test_message_starting_with_a_path_is_not_a_command(self):
+        note = self.tmp / "notes.md"
+        note.write_text("hello")
+        out = self.run_lines(f"{note} summarize this", "/nonsense/path what is this?")
+        self.assertNotIn("unknown command", out)
+        self.assertEqual(len(self.fake.requests), 2)
+        self.assertIn("<file path=", self.fake.requests[0]["messages"][0]["content"])
+
+    def test_unreadable_file_warns_and_still_sends(self):
+        blob = self.tmp / "blob.bin"
+        blob.write_bytes(b"\x00\x01")
+        out = self.run_lines(f"read {blob}")
+        self.assertIn("isn't text or an image", out)
+        self.assertEqual(self.fake.requests[0]["messages"], [
+            {"role": "user", "content": f"read {blob}"}])
+
+    def test_images_need_a_model_with_vision(self):
+        pic = self.tmp / "pic.png"
+        pic.write_bytes(b"\x89PNG")
+        out = self.run_lines(f"describe {pic}")
+        self.assertIn("m1 can't see images; leaving 1 out", out)
+        self.assertNotIn("images", self.fake.requests[0]["messages"][0])
+        self.fake.capabilities.append("vision")
+        self.repl.client = Client(self.fake.host)  # capabilities are cached per client
+        out = self.run_lines("look again")
+        self.assertEqual(self.fake.requests[1]["messages"][0]["images"], ["iVBORw=="])
+        self.assertEqual(out.count("can't see images"), 1)
+
+    def test_files_command_edit_and_exports(self):
+        note = self.tmp / "notes.md"
+        note.write_text("alpha ``` fence")
+        out = self.run_lines("/files", f"read {note}", "/files")
+        self.assertIn("no files in this conversation", out)
+        self.assertIn(f"#1  {note} (text, 15 B)", out)
+
+        note.write_text("beta")
+        self.repl.editor = lambda text: text + " please"
+        self.run_lines("/edit")
+        (stored, _) = self.store.messages(self.repl.session.id)
+        self.assertEqual((stored.content, stored.attachments[0].content),
+                         (f"read {note} please", "beta"))  # editing re-reads the file
+
+        self.run_lines(f"/export md {self.tmp / 'o.md'}", f"/export json {self.tmp / 'o.json'}")
+        self.assertIn(f"<details><summary>attached: {note} (text, 4 B)</summary>",
+                      (self.tmp / "o.md").read_text())
+        exported = json.loads((self.tmp / "o.json").read_text())["messages"][0]["attachments"]
+        self.assertEqual(exported, [{"path": str(note), "kind": "text", "bytes": 4, "note": None,
+                                     "content": "beta"}])
+
+    def test_resume_shows_what_was_attached(self):
+        note = self.tmp / "notes.md"
+        note.write_text("hello")
+        self.run_lines(f"read {note}")
+        self.out = io.StringIO()
+        self.repl = self.make_repl(self.store.get(self.repl.session.id))
+        self.assertIn(f"    attached {note} (text, 5 B)", self.run_lines("/quit"))
 
     def test_system_text(self):
         self.run_lines("/system Be terse.", "hi", "/system clear", "hi again")
@@ -329,6 +433,11 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(self.repl.completions("/model m2"), ["m2:latest"])
         self.assertEqual(self.repl.completions("/think s"), ["show"])
         self.assertEqual(self.repl.completions("plain text"), [])
+        (self.tmp / "notes.md").write_text("x")
+        self.assertEqual(self.repl.completions(f"summarize {self.tmp}/no"), [f"{self.tmp}/notes.md"])
+        self.assertEqual(self.repl.completions(f"{self.tmp}/no"), [f"{self.tmp}/notes.md"])
+        self.assertEqual(self.repl.completions(f"/skill add {self.tmp}/sk"), [f"{self.tmp}/skills/"])
+        self.assertEqual(self.repl.completions("/sk"), ["/skill", "/skills"])  # commands still win
 
 
 if __name__ == "__main__":

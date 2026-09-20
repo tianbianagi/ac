@@ -1,8 +1,9 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from ac.store import Ambiguous, NotFound, Store
+from ac.store import SCHEMA, Ambiguous, Attachment, NotFound, Store
 
 
 class StoreTest(unittest.TestCase):
@@ -100,6 +101,25 @@ class StoreTest(unittest.TestCase):
         self.store.add_message(part.id, "user", "diverged")
         self.assertEqual(self.store.get(s.id).message_count, 4)  # original untouched
 
+    def test_attachments_roundtrip_cascade_and_fork(self):
+        s = self.make()
+        sent = [Attachment("/tmp/a.md", "text", content="alpha", note="first 1 KB of 2 KB"),
+                Attachment("/tmp/b.png", "image", data=b"\x89PNG")]
+        self.store.add_message(s.id, "user", "look", attachments=sent)
+        self.store.add_message(s.id, "assistant", "seen")
+        first, second = self.store.messages(s.id)
+        self.assertEqual(first.attachments, sent)  # order and every field preserved
+        self.assertEqual(second.attachments, [])
+        self.assertEqual((sent[0].size, sent[1].size), (5, 4))
+
+        fork = self.store.fork(s.id)
+        self.assertEqual(self.store.messages(fork.id)[0].attachments, sent)
+        self.store.delete(s.id)
+        self.assertEqual(self.store.messages(fork.id)[0].attachments, sent)  # fork owns its copy
+        self.store.delete_messages_from(fork.id, 1)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM attachments").fetchone()[0], 0)
+        self.assertEqual(self.store.list(search="alpha"), [])  # file text isn't searched as chat
+
     def test_list_order_and_search(self):
         a = self.make(title="alpha")
         b = self.make(title="beta")
@@ -116,6 +136,28 @@ class StoreTest(unittest.TestCase):
         self.store.delete_messages_from(s.id, 2)
         self.assertEqual(self.store.list(search="ephemeral"), [])
         self.assertEqual(len(self.store.list(search="keep")), 1)
+
+    def test_upgrades_a_database_from_before_attachments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "old.db"
+            old = sqlite3.connect(path)
+            old.executescript(SCHEMA)
+            old.execute("INSERT INTO sessions VALUES ('abcd1234', 'old chat', 'm1', NULL, '{}', "
+                        "NULL, NULL, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+            old.execute("INSERT INTO messages (session_id, seq, role, content, created_at) "
+                        "VALUES ('abcd1234', 1, 'user', 'from before', '2026-01-01T00:00:00+00:00')")
+            old.execute("PRAGMA user_version = 1")
+            old.commit()
+            old.close()
+
+            store = Store(path)
+            self.addCleanup(store.close)
+            self.assertEqual(store.db.execute("PRAGMA user_version").fetchone()[0], 2)
+            (message,) = store.messages("abcd1234")
+            self.assertEqual((message.content, message.attachments), ("from before", []))
+            store.add_message("abcd1234", "user", "now with a file",
+                              attachments=[Attachment("/x", "text", content="x")])
+            self.assertEqual(len(store.messages("abcd1234")[1].attachments), 1)
 
     def test_persists_across_connections(self):
         with tempfile.TemporaryDirectory() as tmp:
