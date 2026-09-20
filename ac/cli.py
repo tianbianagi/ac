@@ -52,7 +52,7 @@ def cmd_resume(args):
     store = open_store()
     session = store.get(args.id) if args.id else store.latest()
     if session is None:
-        raise StoreError("no sessions yet. Start one with `ac`.")
+        raise StoreError(f"no sessions yet. Start one with `{config.COMMAND}`.")
     _interactive(store, Client(), session)
 
 
@@ -234,9 +234,10 @@ def cmd_models(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="ac", description="Agentless chat with local Ollama models. "
-        "Run with no command to start a new session; `ac -c` continues the latest one.")
-    parser.add_argument("--version", action="version", version=f"ac {__version__}")
+        prog=config.COMMAND, description="Agentless chat with local Ollama models. "
+        f"Run with no command to start a new session; `{config.COMMAND} -c` continues the "
+        "latest one.")
+    parser.add_argument("--version", action="version", version=f"{config.COMMAND} {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     def add(name, func, help, aliases=()):
@@ -308,7 +309,7 @@ def build_parser():
 
 
 def _default_command(argv):
-    """`ac` and `ac -m x` mean `ac new ...`; `ac -c` means `ac resume`."""
+    """`acc` and `acc -m x` mean `acc new ...`; `acc -c` means `acc resume`."""
     if not argv:
         return ["new"]
     if argv[0] in ("-c", "--continue"):
@@ -324,7 +325,7 @@ def main(argv=None):
     try:
         return args.func(args) or 0
     except (StoreError, skills.SkillError, OllamaError) as e:
-        print(f"ac: {e}", file=sys.stderr)
+        print(f"{config.COMMAND}: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print(file=sys.stderr)

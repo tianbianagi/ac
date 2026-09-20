@@ -171,7 +171,7 @@ class CliTest(unittest.TestCase):
 
     def test_errors_are_one_line(self):
         code, _, err = self.ac("show", "nope")
-        self.assertEqual((code, err), (1, "ac: no session matches 'nope'\n"))
+        self.assertEqual((code, err), (1, "acc: no session matches 'nope'\n"))
         code, _, err = self.ac("resume")
         self.assertEqual(code, 1)
         self.assertIn("no sessions yet", err)

@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
-ac = "ac.cli:main"
+acc = "ac.cli:main"
 
 [tool.setuptools]
 packages = ["ac"]

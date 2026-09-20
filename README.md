@@ -7,31 +7,33 @@ and opt-in skills. Python 3.11+, standard library only.
 prompt at all. Anything that shapes the model is attached to one session, explicitly, and can be
 inspected (`/context`) and detached again.
 
+The command is `acc`, because macOS already ships an unrelated `/usr/sbin/ac`.
+
 ## Install
 
 ```sh
-ln -s "$PWD/bin/ac" ~/.local/bin/ac     # or run ./bin/ac, or python3 -m ac
+ln -s "$PWD/bin/acc" ~/.local/bin/acc     # or run ./bin/acc, or python3 -m ac
 ```
 
 ## Use
 
 ```sh
-ac                          # new session
-ac -m qwen3.8:27b -s concise
-ac -c                       # continue the latest session
-ac resume ID                # id, unique id prefix, or exact title
+acc                          # new session
+acc -m qwen3.8:27b -s concise
+acc -c                       # continue the latest session
+acc resume ID                # id, unique id prefix, or exact title
 
-ac ls [--search QUERY]      # full-text search over titles and messages
-ac show ID                  ac rename ID TITLE
-ac fork ID [--at SEQ]       ac rm ID... [-y]
-ac set ID [-m MODEL] [--system TEXT] [--think on|off] [-o temperature=0.2] [--add-skill NAME]
-ac export ID [--format md|json] [-o FILE]
+acc ls [--search QUERY]      # full-text search over titles and messages
+acc show ID                  acc rename ID TITLE
+acc fork ID [--at SEQ]       acc rm ID... [-y]
+acc set ID [-m MODEL] [--system TEXT] [--think on|off] [-o temperature=0.2] [--add-skill NAME]
+acc export ID [--format md|json] [-o FILE]
 
-ac ask "question"           # one-shot; prints only the answer
-git diff | ac ask "review this:" -        # `-` marks where piped stdin goes
-ac ask --no-save "..."      # don't keep it as a session
+acc ask "question"           # one-shot; prints only the answer
+git diff | acc ask "review this:" -        # `-` marks where piped stdin goes
+acc ask --no-save "..."      # don't keep it as a session
 
-ac skills [NAME]            ac models
+acc skills [NAME]            acc models
 ```
 
 Inside a chat, `/help` lists the commands: session management (`/new /sessions /switch /rename
@@ -68,9 +70,9 @@ with `AC_SKILLS_PATH`. Attach by name, or by path to any markdown file: `/skill 
   Set a window explicitly with `/set num_ctx 32768`.
 - **Switching models.** `/model` lists installed models; `/model NAME` (a unique prefix is enough)
   or `/model NUMBER` switches mid-chat. The whole conversation carries over to the new model, the
-  choice is saved with the session, and every reply records which model wrote it (`ac export
+  choice is saved with the session, and every reply records which model wrote it (`acc export
   --format json`). If the new model isn't in memory, you're told how much Ollama has to load first.
-- **Thinking** is shown dimmed (`/think hide` collapses it), stored for `ac show --thinking`, and
+- **Thinking** is shown dimmed (`/think hide` collapses it), stored for `acc show --thinking`, and
   never sent back to the model.
 - **Failures.** If a reply fails, your message is kept and `/retry` resends it. An interrupted
   reply is kept as-is and stays part of the conversation unless you `/retry` or `/undo`.
