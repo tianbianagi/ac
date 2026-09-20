@@ -34,7 +34,7 @@ Sessions
   /rename TITLE           rename this session
   /fork [SEQ]             branch this session (up to message SEQ) and switch to the copy
   /delete [ID]            delete this (or another) session
-  /export [md|json] [FILE]
+  /export [md|json] [FILE]  write the transcript (default: ./ac-ID.md in the current folder)
 Skills and prompt
   /skills                 list available skills (* = attached)
   /skill add NAME|PATH    attach a skill to this session
@@ -378,7 +378,7 @@ class Repl:
         text = (render.to_json(session, messages) if fmt == "json"
                 else render.to_markdown(session, messages))
         path.write_text(text, encoding="utf-8")
-        self.note(f"wrote {path}")
+        self.note(f"wrote {files.display_path(path)}")
 
     # -- commands: skills and prompt --------------------------------------
 

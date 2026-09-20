@@ -4,7 +4,7 @@ import argparse
 import json
 import sys
 
-from . import __version__, config, render, skills
+from . import __version__, config, files, render, skills
 from .ollama import Client, OllamaError, resolve_model
 from .repl import Repl, setup_readline
 from .store import Store, StoreError
@@ -151,7 +151,7 @@ def cmd_export(args):
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(text)
-        print(f"wrote {args.output}", file=sys.stderr)
+        print(f"wrote {files.display_path(args.output)}", file=sys.stderr)
     else:
         sys.stdout.write(text)
 

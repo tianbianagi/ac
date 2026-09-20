@@ -416,7 +416,16 @@ class ReplTest(unittest.TestCase):
     def test_export(self):
         self.fake.reply("Hello!")
         target = self.tmp / "out.md"
-        self.run_lines("hi", f"/export md {target}", f"/export json {self.tmp / 'out.json'}")
+        out = self.run_lines("hi", f"/export md {target}",
+                             f"/export json {self.tmp / 'out.json'}")
+        self.assertIn(f"wrote {target}", out)  # the full path, so the file can be found
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        out = self.run_lines("/export")
+        default = self.tmp / f"ac-{self.repl.session.id}.md"
+        self.assertTrue(default.is_file())
+        self.assertIn(f"wrote {default}", out)  # default name lands in the current folder
         text = target.read_text()
         self.assertIn("## User\n\nhi", text)
         self.assertIn("## Assistant\n\nHello!", text)

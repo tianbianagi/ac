@@ -129,13 +129,19 @@ def collect(text):
     return attachments, problems
 
 
-def describe(attachment):
-    """One line for the user: the path (with ~ for home), what it is, and how big."""
-    path, home = attachment.path, str(Path.home())
+def display_path(path):
+    """An absolute path for showing to the user, with ~ standing in for the home directory."""
+    path, home = str(Path(path).expanduser().absolute()), str(Path.home())
     if path == home or path.startswith(home + os.sep):
         path = "~" + path[len(home):]
+    return path
+
+
+def describe(attachment):
+    """One line for the user: where it is, what it is, and how big."""
     detail = f"{attachment.kind}, {_size(attachment.size)}"
-    return f"{path} ({detail}{', ' + attachment.note if attachment.note else ''})"
+    note = f", {attachment.note}" if attachment.note else ""
+    return f"{display_path(attachment.path)} ({detail}{note})"
 
 
 def for_model(attachment):
