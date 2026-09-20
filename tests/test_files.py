@@ -57,7 +57,7 @@ class FilesTest(unittest.TestCase):
         self.assertIn("notes.md", folder.content)
 
     def test_binary_and_unreadable(self):
-        with self.assertRaisesRegex(files.FileError, "isn't text or an image"):
+        with self.assertRaisesRegex(files.FileError, "isn't text, a PDF or an image"):
             files.read(self.root / "blob.bin")
         (self.root / "latin.txt").write_bytes("café".encode("latin-1"))
         with self.assertRaisesRegex(files.FileError, "isn't text"):

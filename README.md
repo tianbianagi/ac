@@ -56,7 +56,13 @@ attached ~/notes/plan.md (text, 3.1 KB)
   dragging a file into the terminal types). Tab completes paths.
 - **Text files** are inlined (the first 256 KB of larger ones, and you're told when that happens).
   **Images** (png, jpg, webp, gif) go to models with vision; other models get a warning instead.
-  A **directory** becomes a listing of its entries. Other binary files, PDFs included, are refused.
+  A **directory** becomes a listing of its entries. Other binary files are refused.
+- **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
+  `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
+  (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A
+  scanned PDF with no text layer is sent as images of its first 8 pages, for models with vision.
+  No PDF library is involved: on macOS the system's PDFKit does the work through `osascript`;
+  elsewhere `pdftotext` (poppler) is used if installed, and scans can't be rendered.
 - The file is **snapshotted when you send the message** and stays in the conversation from then
   on, so later turns can refer to it and the history always matches what the model really saw.
   Name the path again to send its current contents. `/files` lists what a conversation holds.

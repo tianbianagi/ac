@@ -9,18 +9,21 @@ import os
 import re
 from pathlib import Path
 
+from . import pdf
 from .store import Attachment
 
 MAX_TEXT_BYTES = 256 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 200
 MAX_ATTACHMENTS = 20
+MAX_PDF_IMAGE_PAGES = 8  # a scanned PDF is sent as page images; each costs ~2k tokens
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 # A double-quoted phrase, a single-quoted phrase, or a bare word that may contain "\ ".
 _TOKEN = re.compile(r'"([^"]+)"|\'([^\']+)\'|((?:\\.|[^\s\\])+)')
 _TRAILING = ".,;:!?)]}>"
 _LEADING = "([{<"
+_PAGES = re.compile(r"(\d+)(?:-(\d+))?")  # the 7 or 10-20 of report.pdf#10-20
 
 
 class FileError(Exception):
@@ -46,26 +49,37 @@ def _looks_like_path(word):
     return len(word) > 1 and (word.startswith(("/", "~")) or "/" in word)
 
 
-def find_paths(text):
-    """Existing files and directories named in a message, in order, without duplicates.
+def _existing(word):
+    try:
+        path = Path(word).expanduser()
+        return path.resolve() if path.exists() else None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def find_refs(text):
+    """Existing files and directories named in a message, as (path, pages) without duplicates.
 
     A word counts when it looks like a path (starts with / or ~, or contains a /) or is marked
     with a leading @, which is how to name a bare file in the current directory: @notes.md.
+    A PDF can carry a page selection, report.pdf#10-20, which comes back as pages "10-20".
     """
     found = []
     for word, explicit in _candidates(text):
         if not (explicit or _looks_like_path(word)):
             continue
-        try:
-            path = Path(word).expanduser()
-            if not path.exists():
-                continue
-            path = path.resolve()
-        except (OSError, RuntimeError, ValueError):
-            continue
-        if path not in found:
-            found.append(path)
+        ref = (_existing(word), None)
+        if ref[0] is None and "#" in word:
+            base, _, pages = word.rpartition("#")
+            if base.lower().endswith(".pdf") and _PAGES.fullmatch(pages):
+                ref = (_existing(base), pages)
+        if ref[0] is not None and ref not in found:
+            found.append(ref)
     return found
+
+
+def find_paths(text):
+    return [path for path, _ in find_refs(text)]
 
 
 def _size(n):
@@ -84,13 +98,13 @@ def read(path):
         size = path.stat().st_size
         if path.suffix.lower() in IMAGE_SUFFIXES:
             if size > MAX_IMAGE_BYTES:
-                raise FileError(f"{path} is too large to attach ({_size(size)}; images are "
+                raise FileError(f"{display_path(path)} is too large to attach ({_size(size)}; images are "
                                 f"limited to {_size(MAX_IMAGE_BYTES)})")
             return Attachment(path=str(path), kind="image", data=path.read_bytes())
         with open(path, "rb") as f:
             raw = f.read(MAX_TEXT_BYTES + 1)
     except OSError as e:
-        raise FileError(f"can't read {path}: {e.strerror or e}") from None
+        raise FileError(f"can't read {display_path(path)}: {e.strerror or e}") from None
 
     truncated = len(raw) > MAX_TEXT_BYTES
     raw = raw[:MAX_TEXT_BYTES]
@@ -100,7 +114,7 @@ def read(path):
         # A cut can land inside a multi-byte character; only then is a decode error forgivable.
         content = raw.decode("utf-8", errors="ignore" if truncated else "strict")
     except ValueError:
-        raise FileError(f"{path} isn't text or an image, so it can't be attached") from None
+        raise FileError(f"{display_path(path)} isn't text, a PDF or an image, so it can't be attached") from None
     note = f"first {_size(len(raw))} of {_size(size)}" if truncated else None
     return Attachment(path=str(path), kind="text", content=content, note=note)
 
@@ -115,15 +129,89 @@ def _read_directory(path):
     return Attachment(path=str(path), kind="directory", content="\n".join(names), note=note)
 
 
+def _page_range(numbers):
+    first, last = numbers[0], numbers[-1]
+    return f"page {first}" if first == last else f"pages {first}-{last}"
+
+
+def read_pdf(path, pages=None):
+    """Attachments for a PDF, plus lines the user should see about what was left out.
+
+    Normally that is one text attachment with [page N] markers. A PDF with no text layer (a
+    scan) is sent as images of its pages instead, where the system can render them.
+    """
+    try:
+        texts = pdf.page_texts(path)
+    except pdf.PdfError as e:
+        raise FileError(f"can't read {display_path(path)}: {e}") from None
+    total = len(texts)
+    numbers = list(range(1, total + 1))
+    if pages:
+        first, last = _PAGES.fullmatch(pages).groups()
+        numbers = [n for n in numbers if int(first) <= n <= int(last or first)]
+        if not numbers:
+            raise FileError(f"{display_path(path)} has {total} pages; there is no {_page_range([int(first), int(last or first)])}")
+    if not numbers:
+        raise FileError(f"{display_path(path)} has no pages")
+
+    if sum(len(texts[n - 1].strip()) for n in numbers) < 10 * len(numbers):
+        return _pdf_as_images(path, numbers, total)
+
+    kept, used = [], 0
+    for n in numbers:
+        block = f"[page {n}]\n{texts[n - 1].strip()}"
+        size = len(block.encode()) + 2
+        if kept and used + size > MAX_TEXT_BYTES:
+            break
+        if not kept and size > MAX_TEXT_BYTES:  # one enormous page: keep what fits
+            block = block.encode()[:MAX_TEXT_BYTES].decode("utf-8", errors="ignore")
+        kept.append((n, block))
+        used += size
+    sent = [n for n, _ in kept]
+    whole = sent == list(range(1, total + 1))
+    note = f"PDF, {total} pages" if whole else f"PDF, {_page_range(sent)} of {total}"
+    notes = []
+    if len(sent) < len(numbers):
+        notes.append(f"{path.name} is long: sent {_page_range(sent)} of {total}. To read on, "
+                     f"name {path.name}#{sent[-1] + 1}-{numbers[-1]}")
+    text = "\n\n".join(block for _, block in kept)
+    return [Attachment(path=str(path), kind="text", content=text, note=note)], notes
+
+
+def _pdf_as_images(path, numbers, total):
+    if not pdf.can_render():
+        raise FileError(f"{display_path(path)} has no text layer (a scan?), and its pages can't be turned "
+                        "into images on this system")
+    sent = numbers[:MAX_PDF_IMAGE_PAGES]
+    try:
+        rendered = pdf.render_pages(path, sent)
+    except pdf.PdfError as e:
+        raise FileError(f"can't read {display_path(path)}: {e}") from None
+    notes = [f"{path.name} has no text layer (a scan?), so {_page_range(sent)} of {total} "
+             f"went as {'an image' if len(sent) == 1 else 'images'}"]
+    if len(sent) < len(numbers):
+        notes[0] += f". For more, name {path.name}#{sent[-1] + 1}-{numbers[-1]}"
+    return [Attachment(path=f"{path}#{n}", kind="image", data=data) for n, data in rendered], notes
+
+
+def read_all(path, pages=None):
+    """Everything one named path contributes: (attachments, lines for the user)."""
+    if Path(path).suffix.lower() == ".pdf" and Path(path).is_file():
+        return read_pdf(Path(path), pages)
+    return [read(path)], []
+
+
 def collect(text):
-    """Attachments for every path named in a message, plus a problem line for each failure."""
+    """Attachments for every path named in a message, plus lines the user should see."""
     attachments, problems = [], []
-    paths = find_paths(text)
-    if len(paths) > MAX_ATTACHMENTS:
-        problems.append(f"only the first {MAX_ATTACHMENTS} of {len(paths)} paths were attached")
-    for path in paths[:MAX_ATTACHMENTS]:
+    refs = find_refs(text)
+    if len(refs) > MAX_ATTACHMENTS:
+        problems.append(f"only the first {MAX_ATTACHMENTS} of {len(refs)} paths were attached")
+    for path, pages in refs[:MAX_ATTACHMENTS]:
         try:
-            attachments.append(read(path))
+            got, notes = read_all(path, pages)
+            attachments += got
+            problems += notes
         except FileError as e:
             problems.append(str(e))
     return attachments, problems

@@ -6,11 +6,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from ac import pdf
 from ac.ollama import Client
 from ac.render import Style
 from ac.repl import SUMMARY_HEADER, Repl, build_messages, make_title
 from ac.store import Attachment, Message, Store
 from tests.fake_ollama import FakeOllama
+from tests.make_pdf import make_pdf
 from tests.test_skills import write_skill
 
 
@@ -203,11 +205,22 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(len(self.fake.requests), 2)
         self.assertIn("<file path=", self.fake.requests[0]["messages"][0]["content"])
 
+    @unittest.skipUnless(pdf._has_pdfkit(), "needs macOS PDFKit")
+    def test_pdf_text_reaches_the_model(self):
+        report = self.tmp / "report.pdf"
+        report.write_bytes(make_pdf(["Revenue grew 12 percent.", "Costs fell 3 percent."]))
+        out = self.run_lines(f"what happened to costs in {report}#2?")
+        self.assertIn(f"attached {report} (text, 30 B, PDF, page 2 of 2)", out)
+        self.assertEqual(self.fake.requests[0]["messages"][0]["content"],
+                         f'<file path="{report}" note="PDF, page 2 of 2">\n[page 2]\n'
+                         f"Costs fell 3 percent.\n</file>\n\n"
+                         f"what happened to costs in {report}#2?")
+
     def test_unreadable_file_warns_and_still_sends(self):
         blob = self.tmp / "blob.bin"
         blob.write_bytes(b"\x00\x01")
         out = self.run_lines(f"read {blob}")
-        self.assertIn("isn't text or an image", out)
+        self.assertIn("isn't text, a PDF or an image", out)
         self.assertEqual(self.fake.requests[0]["messages"], [
             {"role": "user", "content": f"read {blob}"}])
 

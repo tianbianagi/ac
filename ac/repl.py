@@ -53,7 +53,8 @@ Conversation
   /compact                continue in a new session seeded with a summary of this one
   /help  /quit
 Files: name a path in your message (/abs, ~/home, ./relative, or @name for a bare filename) and
-its contents are sent along: text files, images (for models with vision) and directory listings.
+its contents are sent along: text files, PDFs (report.pdf#10-20 picks pages), images (for
+models with vision) and directory listings.
 Input: wrap multi-line text in \"\"\" ... \"\"\". Start a message with // to send a leading /.
 Ctrl-C stops a reply (the partial text is kept); Ctrl-D quits."""
 
