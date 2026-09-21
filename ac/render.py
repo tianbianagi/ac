@@ -159,13 +159,37 @@ def format_message(msg, style, thinking=False):
     return "\n".join(p for p in parts if p)
 
 
-def export_path(session, fmt):
-    """Default file for an export: "<date the session began> ac-<id>.<fmt>" in the export folder.
+def safe_filename(title, width=80):
+    """A title as a filename: nothing a filesystem, a shell or a sync service will choke on."""
+    name = re.sub(r'[/\\:*?"<>|\x00-\x1f]+', " ", title or "")
+    name = " ".join(name.split()).strip(". ")
+    if len(name) > width:
+        name = name[:width].rsplit(" ", 1)[0].strip(". ")
+    return name
 
-    The session's own date, not today's, so exporting again updates the same file.
+
+def _is_export_of(path, session):
+    """Whether an existing file is an earlier export of this same session."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return session.id in f.read(1000)  # both formats state the id near the top
+    except OSError:
+        return False
+
+
+def export_path(session, fmt):
+    """Default file for an export: "<date the session began> <title>.<fmt>" in the export folder.
+
+    The session's own date, not today's, so exporting again updates the same file. If another
+    session already owns that name, this one's id is added rather than overwriting it.
     """
     day = datetime.fromisoformat(session.created_at).astimezone().date().isoformat()
-    return (config.export_dir() or Path.cwd()) / f"{day} ac-{session.id}.{fmt}"
+    folder = config.export_dir() or Path.cwd()
+    name = safe_filename(session.title) or f"ac-{session.id}"
+    path = folder / f"{day} {name}.{fmt}"
+    if path.exists() and not _is_export_of(path, session):
+        path = folder / f"{day} {name} ({session.id}).{fmt}"
+    return path
 
 
 def write_export(path, text):

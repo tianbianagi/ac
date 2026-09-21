@@ -11,9 +11,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from . import config, files, render, skills
+from . import config, files, render, skills, titles
 from .ollama import OllamaError, resolve_model
-from .store import StoreError
+from .store import StoreError, first_message_title as make_title
 
 # Session options that are ours; every other key is passed to Ollama as a model option.
 RESERVED_OPTIONS = ("think", "show_thinking", "keep_alive")
@@ -32,10 +32,12 @@ Sessions
   /sessions [QUERY]       list sessions, optionally searching titles and messages
   /switch ID              switch to another session (id, id prefix, or title)
   /rename TITLE           rename this session
+  /title                  have the model write a title for this session
   /fork [SEQ]             branch this session (up to message SEQ) and switch to the copy
   /delete [ID]            delete this (or another) session
-  /export [md|json] [FILE]  write the transcript; by default "DATE ac-ID.md" in your export
-                          folder (export_dir in config.toml), else the current folder
+  /export [md|json] [FILE]  write the transcript; by default "DATE TITLE.md" in your export
+                          folder (export_dir in config.toml), else the current folder.
+                          The model names the session first, unless you already have.
 Skills and prompt
   /skills                 list available skills (* = attached)
   /skill add NAME|PATH    attach a skill to this session
@@ -58,11 +60,6 @@ its contents are sent along: text files, PDFs (report.pdf#10-20 picks pages), im
 models with vision) and directory listings.
 Input: wrap multi-line text in \"\"\" ... \"\"\". Start a message with // to send a leading /.
 Ctrl-C stops a reply (the partial text is kept); Ctrl-D quits."""
-
-
-def make_title(text, width=60):
-    text = " ".join(text.split())
-    return text if len(text) <= width else text[:width - 1].rstrip() + "…"
 
 
 def build_messages(system, messages, vision=True):
@@ -200,7 +197,8 @@ class Repl:
     def send(self, text):
         s = self.session
         if not s.persisted:
-            s.title = s.title or make_title(text)
+            if not s.title:
+                s.title, s.title_source = make_title(text), "auto"
             self.store.save(s)
         attachments, problems = files.collect(text)
         for problem in problems:
@@ -343,9 +341,17 @@ class Repl:
     def cmd_rename(self, arg):
         if not arg:
             return self.error("usage: /rename TITLE")
-        self.session.title = arg
+        self.session.title, self.session.title_source = arg, "user"
         self._changed()
         self.note(f"renamed to '{arg}'")
+
+    def cmd_title(self, arg):
+        if arg:
+            return self.cmd_rename(arg)
+        if not self._require_saved("name"):
+            return
+        self.session.title_source = "auto"  # asked for by name: replace whatever is there
+        titles.ensure(self.store, self.client, self.session, self.note, self.warn)
 
     def cmd_fork(self, arg):
         if not self._require_saved("fork"):
@@ -374,6 +380,7 @@ class Repl:
             return
         parts = shlex.split(arg)
         fmt = parts.pop(0) if parts and parts[0] in ("md", "json") else "md"
+        titles.ensure(self.store, self.client, self.session, self.note, self.warn)
         session = self.store.get(self.session.id)
         path = Path(parts[0]).expanduser() if parts else render.export_path(session, fmt)
         messages = self.store.messages(session.id)

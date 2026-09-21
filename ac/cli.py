@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, config, files, render, skills
+from . import __version__, config, files, render, skills, titles
 from .ollama import Client, OllamaError, resolve_model
 from .repl import Repl, setup_readline
 from .store import Store, StoreError
@@ -77,7 +77,7 @@ def cmd_show(args):
 def cmd_rename(args):
     store = open_store()
     session = store.get(args.id)
-    session.title = " ".join(args.title)
+    session.title, session.title_source = " ".join(args.title), "user"
     store.save(session)
     print(f"{session.id} renamed to '{session.title}'")
 
@@ -146,6 +146,11 @@ def cmd_rm(args):
 def cmd_export(args):
     store = open_store()
     session = store.get(args.id)
+
+    def say(text):
+        print(text, file=sys.stderr)
+
+    titles.ensure(store, Client(), session, say, say)
     messages = store.messages(session.id)
     text = (render.to_json(session, messages) if args.format == "json"
             else render.to_markdown(session, messages, thinking=args.thinking))
@@ -300,7 +305,7 @@ def build_parser():
     p.add_argument("--thinking", action="store_true", help="include reasoning (markdown)")
     p.add_argument("-o", "--output", metavar="FILE")
     p.add_argument("--save", action="store_true",
-                   help='write "DATE ac-ID.md" into the export folder instead of printing')
+                   help='write "DATE TITLE.md" into the export folder instead of printing')
 
     p = add("ask", cmd_ask, "one-shot question; `-` or piped stdin supplies the prompt")
     session_setup(p)

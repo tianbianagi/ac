@@ -37,7 +37,7 @@ acc skills [NAME]            acc models
 ```
 
 Inside a chat, `/help` lists the commands: session management (`/new /sessions /switch /rename
-/fork /delete /export`), skills (`/skills`, `/skill add|rm`), prompt (`/system`, `/context`, `/files`),
+/title /fork /delete /export`), skills (`/skills`, `/skill add|rm`), prompt (`/system`, `/context`, `/files`),
 model (`/model`, `/set`, `/think`), and conversation editing (`/retry /edit /undo /compact`).
 Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
 
@@ -117,10 +117,17 @@ Personal settings live in `~/.config/ac/config.toml` (optional):
 export_dir = "~/Documents/chats"
 ```
 
-Exports are named `DATE ac-ID.md`, for example `2026-09-20 ac-efc6c96d.md`. The date is the day
-the session began, so exporting a session again updates its file rather than adding another.
-Without an `export_dir` they go to the current folder. A filename given to `/export` or `-o` is
-used exactly as written.
+Exports are named `DATE TITLE.md`, for example `2026-09-20 Planning a Trip to Lisbon.md`. The
+date is the day the session began, so exporting a session again updates its file rather than
+adding another. Without an `export_dir` they go to the current folder. A filename given to
+`/export` or `-o` is used exactly as written.
+
+A session starts out titled with its first message. Before its first export the model is asked,
+once, for a proper title (a short separate request that ignores the session's skills), and that
+becomes the session's title everywhere. A title you chose (`--title`, `/rename`, `acc rename`)
+is never replaced; `/title` asks the model for a new one on demand. If the model can't be
+reached, the export goes ahead under the current title. Characters that are unsafe in filenames
+are dropped, and if another session already owns the name, the session id is appended.
 
 | Variable | Meaning | Default |
 | --- | --- | --- |

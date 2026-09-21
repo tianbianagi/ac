@@ -431,11 +431,15 @@ class ReplTest(unittest.TestCase):
 
     def test_export(self):
         self.fake.reply("Hello!")
+        self.fake.reply('**"Saying Hello: A First Exchange."**\n\nI chose this because...')
         target = self.tmp / "out.md"
         out = self.run_lines("hi", f"/export md {target}",
                              f"/export json {self.tmp / 'out.json'}")
         self.assertIn(f"wrote {target}", out)  # the full path, so the file can be found
+        self.assertIn("titled: Saying Hello: A First Exchange", out)
+        self.assertEqual(len(self.fake.requests), 2)  # named once, not again for the 2nd export
         text = target.read_text()
+        self.assertTrue(text.startswith("# Saying Hello: A First Exchange\n"))
         self.assertIn("## User\n\nhi", text)
         self.assertIn("## Assistant\n\nHello!", text)
         data = json.loads((self.tmp / "out.json").read_text())
@@ -445,17 +449,77 @@ class ReplTest(unittest.TestCase):
         self.addCleanup(os.chdir, cwd)
         out = self.run_lines("/export")
         day = datetime.now().date().isoformat()  # the session began today, local time
-        default = self.tmp / f"{day} ac-{self.repl.session.id}.md"
+        default = self.tmp / f"{day} Saying Hello A First Exchange.md"  # no ":" in filenames
         self.assertTrue(default.is_file())
         self.assertIn(f"wrote {default}", out)  # no export folder set: the current folder
+
+    def test_title_request_is_bounded_and_ignores_the_sessions_prompt(self):
+        write_skill(self.tmp / "skills", "haiku", body="Answer only in haiku.")
+        note = self.tmp / "notes.md"
+        note.write_text("FILE BODY " * 500)
+        self.run_lines("/skill add haiku", "/system Be terse.", f"summarize {note} " + "x" * 5000,
+                       *[f"question {n}" for n in range(20)])
+        self.fake.reply("Notes Summary and Twenty Questions")
+        self.run_lines("/title")
+        (message,) = self.fake.requests[-1]["messages"]  # one user turn: no system, no skills
+        self.assertEqual(message["role"], "user")
+        self.assertNotIn("haiku", message["content"])
+        self.assertNotIn("FILE BODY", message["content"])  # files are named, not included
+        self.assertIn("[attached: notes.md]", message["content"])
+        self.assertIn("question 19", message["content"])
+        self.assertNotIn("question 10", message["content"])  # the middle is left out
+        self.assertLess(len(message["content"]), 12 * 1300 + 1000)
+        self.assertEqual(self.fake.requests[-1]["think"], False)
+        self.assertEqual(self.store.get(self.repl.session.id).title,
+                         "Notes Summary and Twenty Questions")
+
+    def test_a_title_you_chose_is_kept(self):
+        self.run_lines("hi", "/rename My own title", "/export json")
+        self.assertEqual(len(self.fake.requests), 1)  # the model was not asked
+        day = datetime.now().date().isoformat()
+        cwd_file = Path(f"{day} My own title.json")
+        self.addCleanup(cwd_file.unlink, missing_ok=True)
+        self.assertTrue(cwd_file.is_file())
+        self.fake.reply("A Better Title Perhaps")
+        out = self.run_lines("/title")  # unless asked for by name
+        self.assertIn("titled: A Better Title Perhaps", out)
+        self.run_lines("/title Back to mine")
+        got = self.store.get(self.repl.session.id)
+        self.assertEqual((got.title, got.title_source), ("Back to mine", "user"))
+
+    def test_export_still_happens_when_the_model_cannot_name_it(self):
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, Path(__file__).parent)
+        self.run_lines("first words")
+        day = datetime.now().date().isoformat()
+        for script, reason in [([("error", "boom")], "couldn't ask the model for a title (boom)"),
+                               ([("content", ' \n"" ')], "didn't offer a usable title")]:
+            self.fake.scripts.append(script)
+            out = self.run_lines("/export")
+            self.assertIn(reason, out)
+            self.assertTrue((self.tmp / f"{day} first words.md").is_file())
+        self.assertEqual(self.store.get(self.repl.session.id).title_source, "auto")
+
+    def test_two_sessions_with_one_title_do_not_overwrite_each_other(self):
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, Path(__file__).parent)
+        day = datetime.now().date().isoformat()
+        self.run_lines("hi", "/rename Same name", "/export")
+        first = self.repl.session.id
+        self.run_lines("/new", "hello", "/rename Same name", "/export", "/export")
+        second = self.repl.session.id
+        names = sorted(p.name for p in self.tmp.glob("*.md"))
+        self.assertEqual(names, [f"{day} Same name ({second}).md", f"{day} Same name.md"])
+        self.assertIn(first, (self.tmp / f"{day} Same name.md").read_text())
 
     def test_export_folder_from_config_and_environment(self):
         vault = self.tmp / "my vault" / "acc sessions"  # spaces, and it doesn't exist yet
         (self.tmp / "config" / "ac").mkdir(parents=True)
         (self.tmp / "config" / "ac" / "config.toml").write_text(f'export_dir = "{vault}"\n')
         self.fake.reply("Hello!")
+        self.fake.reply("A Short Greeting")
         out = self.run_lines("hi", "/export", "/export json")
-        name = f"{datetime.now().date().isoformat()} ac-{self.repl.session.id}"
+        name = f"{datetime.now().date().isoformat()} A Short Greeting"
         self.assertIn(f"wrote {vault / name}.md", out)
         self.assertIn("## Assistant\n\nHello!", (vault / f"{name}.md").read_text())
         self.assertTrue((vault / f"{name}.json").is_file())
@@ -481,14 +545,14 @@ class ReplTest(unittest.TestCase):
         with redirect_stderr(err), mock.patch.dict(os.environ, {"AC_EXPORT_DIR": ""}):
             out = self.run_lines("hi", f"/export md {blocker}/x.md", "still alive")
         self.assertIn(f"error: can't write {blocker}/x.md: ", out)
-        self.assertEqual(len(self.fake.requests), 2)
+        self.assertEqual(len(self.fake.requests), 3)  # hi, the title, still alive
         cwd = os.getcwd()
         os.chdir(self.tmp)
         self.addCleanup(os.chdir, cwd)
         with redirect_stderr(err):
             self.run_lines("/export")  # broken config: warned about, then ignored
         self.assertIn("ignoring", err.getvalue())
-        self.assertEqual(len(list(self.tmp.glob("* ac-*.md"))), 1)
+        self.assertEqual(len(list(self.tmp.glob("????-??-?? ok.md"))), 1)
 
     def test_completions(self):
         write_skill(self.tmp / "skills", "haiku")

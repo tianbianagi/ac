@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ac.store import SCHEMA, Ambiguous, Attachment, NotFound, Store
+from ac.store import MIGRATIONS, SCHEMA, Ambiguous, Attachment, NotFound, Store
 
 
 class StoreTest(unittest.TestCase):
@@ -28,6 +28,16 @@ class StoreTest(unittest.TestCase):
         self.assertEqual((got.title, got.model, got.system), ("chat", "m1", "be brief"))
         self.assertEqual(got.options, {"temperature": 0.2})
         self.assertEqual(got.skills, ["b", "a"])  # order preserved
+
+    def test_title_source(self):
+        self.assertEqual(self.make(title="mine").title_source, "user")
+        untitled = self.store.save(self.store.draft("m1"))
+        self.assertIsNone(self.store.get(untitled.id).title_source)
+        untitled.title, untitled.title_source = "Written by the model", "model"
+        self.store.save(untitled)
+        self.assertEqual(self.store.get(untitled.id).title_source, "model")
+        self.assertEqual(self.store.fork(untitled.id).title_source, "model")
+        self.assertEqual(self.store.fork(untitled.id, title="my branch").title_source, "user")
 
     def test_update(self):
         s = self.make(skills=["a"])
@@ -146,13 +156,23 @@ class StoreTest(unittest.TestCase):
                         "NULL, NULL, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
             old.execute("INSERT INTO messages (session_id, seq, role, content, created_at) "
                         "VALUES ('abcd1234', 1, 'user', 'from before', '2026-01-01T00:00:00+00:00')")
+            old.execute("INSERT INTO sessions VALUES ('beef5678', 'how do I bake rye bread?', "
+                        "'m1', NULL, '{}', NULL, NULL, '2026-01-02T00:00:00+00:00', "
+                        "'2026-01-02T00:00:00+00:00')")
+            old.execute("INSERT INTO messages (session_id, seq, role, content, created_at) VALUES "
+                        "('beef5678', 1, 'user', 'how do I  bake\nrye bread?', "
+                        "'2026-01-02T00:00:00+00:00')")
             old.execute("PRAGMA user_version = 1")
             old.commit()
             old.close()
 
             store = Store(path)
             self.addCleanup(store.close)
-            self.assertEqual(store.db.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(store.db.execute("PRAGMA user_version").fetchone()[0],
+                             len(MIGRATIONS))
+            # 'old chat' isn't its first message, so someone chose it: never replace it.
+            self.assertEqual(store.get("abcd1234").title_source, "user")
+            self.assertEqual(store.get("beef5678").title_source, "auto")  # just the first message
             (message,) = store.messages("abcd1234")
             self.assertEqual((message.content, message.attachments), ("from before", []))
             store.add_message("abcd1234", "user", "now with a file",

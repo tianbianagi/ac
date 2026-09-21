@@ -71,8 +71,11 @@ CREATE TABLE attachments (
 CREATE INDEX attachments_message ON attachments(message_id);
 """
 
+# Who wrote the title: "auto" (the first message), "model" or "user".
+TITLE_SOURCE_SCHEMA = "ALTER TABLE sessions ADD COLUMN title_source TEXT;"
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
-MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA]
+MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA]
 
 
 class StoreError(Exception):
@@ -92,6 +95,7 @@ class Session:
     id: str
     model: str
     title: str | None = None
+    title_source: str | None = None
     system: str | None = None
     options: dict = field(default_factory=dict)
     skills: list = field(default_factory=list)
@@ -135,6 +139,12 @@ class Message:
     attachments: list = field(default_factory=list)
 
 
+def first_message_title(text, width=60):
+    """The automatic title a session gets from its first message."""
+    text = " ".join(text.split())
+    return text if len(text) <= width else text[:width - 1].rstrip() + "…"
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
@@ -171,14 +181,29 @@ class Store:
                     self.db.executescript(FTS_SCHEMA)
                 except sqlite3.OperationalError:
                     pass  # SQLite built without FTS5: search falls back to LIKE
+            if MIGRATIONS[step] is TITLE_SOURCE_SCHEMA:
+                self._backfill_title_source()
             self.db.execute(f"PRAGMA user_version = {step + 1}")
             self.db.commit()
+
+    def _backfill_title_source(self):
+        """Older sessions didn't record who titled them. A title that isn't simply the first
+        message must have been chosen by the user, and so must never be replaced."""
+        rows = self.db.execute(
+            """SELECT s.id, s.title, (SELECT content FROM messages m WHERE m.session_id = s.id
+                                      AND m.role = 'user' ORDER BY seq LIMIT 1) AS first
+               FROM sessions s WHERE s.title IS NOT NULL""").fetchall()
+        for row in rows:
+            automatic = row["first"] is not None and row["title"] == first_message_title(row["first"])
+            self.db.execute("UPDATE sessions SET title_source = ? WHERE id = ?",
+                            ("auto" if automatic else "user", row["id"]))
 
     # -- sessions ---------------------------------------------------------
 
     def draft(self, model, *, title=None, system=None, options=None, skills=()):
         """A new session that is not written until save(), so abandoned launches leave nothing."""
         return Session(id=secrets.token_hex(4), model=model, title=title, system=system,
+                       title_source="user" if title else None,
                        options=dict(options or {}), skills=list(skills))
 
     def save(self, session):
@@ -187,13 +212,14 @@ class Store:
         session.updated_at = now
         with self.db:
             self.db.execute(
-                """INSERT INTO sessions (id, title, model, system, options, parent_id,
-                                         forked_at_seq, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO sessions (id, title, title_source, model, system, options,
+                                         parent_id, forked_at_seq, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
-                       title = excluded.title, model = excluded.model, system = excluded.system,
+                       title = excluded.title, title_source = excluded.title_source,
+                       model = excluded.model, system = excluded.system,
                        options = excluded.options, updated_at = excluded.updated_at""",
-                (session.id, session.title, session.model, session.system,
+                (session.id, session.title, session.title_source, session.model, session.system,
                  json.dumps(session.options), session.parent_id, session.forked_at_seq,
                  session.created_at, session.updated_at))
             self.db.execute("DELETE FROM session_skills WHERE session_id = ?", (session.id,))
@@ -208,7 +234,8 @@ class Store:
             "SELECT ref FROM session_skills WHERE session_id = ? ORDER BY position", (row["id"],))]
         keys = row.keys()
         return Session(
-            id=row["id"], model=row["model"], title=row["title"], system=row["system"],
+            id=row["id"], model=row["model"], title=row["title"],
+            title_source=row["title_source"], system=row["system"],
             options=json.loads(row["options"]), skills=skills, parent_id=row["parent_id"],
             forked_at_seq=row["forked_at_seq"], created_at=row["created_at"],
             updated_at=row["updated_at"], persisted=True,
@@ -267,6 +294,8 @@ class Store:
                 (src.id,)).fetchone()[0]
         new = self.draft(src.model, title=title or f"{src.title or src.id} (fork)",
                          system=src.system, options=src.options, skills=src.skills)
+        if not title:
+            new.title_source = src.title_source  # a copy of a first-message title still is one
         new.parent_id, new.forked_at_seq = src.id, at_seq
         self.save(new)
         with self.db:

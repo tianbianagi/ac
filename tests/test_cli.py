@@ -164,8 +164,14 @@ class CliTest(unittest.TestCase):
         self.assertIn("# Rye bread", target.read_text())
         with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "vault")}):
             _, out, err = self.ac("export", rye.id, "--save")
-        (saved,) = (self.tmp / "vault").glob(f"????-??-?? ac-{rye.id}.md")
+        (saved,) = (self.tmp / "vault").glob("????-??-?? Rye bread.md")  # renamed by hand above
         self.assertEqual((out, err), ("", f"wrote {saved}\n"))
+
+        self.fake.reply("Sourdough Starters Explained")
+        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "vault")}):
+            _, out, err = self.ac("export", sourdough.id, "--save")
+        self.assertIn("titled: Sourdough Starters Explained", err)
+        self.assertEqual(len(list((self.tmp / "vault").glob("* Sourdough Starters Explained.md"))), 1)
 
         code, _, err = self.ac("rm", rye.id)
         self.assertEqual(code, 1)
