@@ -45,8 +45,9 @@ narrows it (for sessions, by title, id or anything said in the conversation), th
 Enter chooses and Esc cancels. With an argument they go straight there: `/sessions 3e05` (an id,
 id prefix, exact title, or a number), `/models qwen3.5`. Any other text after `/sessions` opens the
 list already filtered by it. In the session list, Ctrl-D (or the forward-delete key) deletes the
-highlighted session after a `y`, and the list stays open so you can clear out several; the session
-you are in is protected there (`/delete` handles that one). Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
+highlighted session after a `y`, and the list stays open so you can clear out several. That
+includes the session you are in: you carry on in a new, empty one on the same model, and are
+told so when you close the list. Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
 
 ## Files
 

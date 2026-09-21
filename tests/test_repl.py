@@ -763,10 +763,11 @@ class ReplTest(unittest.TestCase):
     def test_sessions_can_be_deleted_from_the_picker(self):
         first, second, third = self.three_sessions()
 
-        def picker(sessions, label, *, delete, protect, **options):
-            current, other = sessions[0], sessions[1]
-            self.assertIn("you are in this session", protect(current))
-            self.assertIsNone(protect(other))
+        def picker(sessions, label, *, delete, wording, **options):
+            self.assertNotIn("protect", options)  # nothing in this list is off limits
+            other = sessions[1]
+            self.assertEqual(wording(other), ("Delete “second chat”? y deletes it for good",
+                                              "deleted “second chat”"))
             delete(other)
             return None
 
@@ -776,6 +777,57 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(self.store.messages(second), [])  # its messages went with it
         self.assertEqual(self.repl.session.id, third)
         self.assertIn("stayed in this session", out)
+
+    def test_deleting_the_current_session_moves_you_to_a_new_one_and_keeps_the_list_open(self):
+        first, second, third = self.three_sessions()
+        self.repl.session.model = "m2:latest"
+        self.store.save(self.repl.session)
+        self.repl.queued = ["something queued for the session about to go"]
+        during = {}
+
+        def picker(sessions, label, *, delete, wording, **options):
+            current = sessions[0]
+            question, done = wording(current)
+            self.assertTrue(question.startswith("Delete the session you are in (you'll continue "
+                                                "in a new one)? y deletes"))
+            self.assertTrue(done.startswith("you are in a new session now"))
+            shown_before = self.out.getvalue()
+            delete(current)
+            # The list is still open here: nothing may be printed over it...
+            self.assertEqual(self.out.getvalue(), shown_before)
+            during.update(session=self.repl.session, labels=[label(s)[1] for s in sessions[1:]])
+            delete(sessions[1])  # ...and it can go on being used
+            return None
+
+        self.repl.picker = picker
+        out = self.run_lines("/sessions")
+        self.assertEqual([s.id for s in self.store.list()], [first])
+        fresh = self.repl.session
+        self.assertIs(fresh, during["session"])
+        self.assertEqual((fresh.persisted, fresh.model, fresh.skills), (False, "m2:latest", []))
+        self.assertNotIn(fresh.id, (first, second, third))
+        self.assertEqual(self.repl.queued, [])
+        self.assertFalse(any("current" in detail for detail in during["labels"]))
+        self.assertIn("deleted the session you were in (“third chat”)", out)
+        self.assertIn(f"session {fresh.id} (new) · m2:latest", out)
+        self.assertNotIn("stayed in this session", out)
+
+        self.run_lines("hello again")  # and the new session works
+        self.assertEqual(self.fake.requests[-1]["messages"], [{"role": "user", "content": "hello again"}])
+        self.assertEqual(len(self.store.list()), 2)
+
+    def test_after_deleting_the_current_session_you_can_still_pick_another(self):
+        first, second, third = self.three_sessions()
+
+        def picker(sessions, label, *, delete, **options):
+            delete(sessions[0])
+            return sessions[2]
+
+        self.repl.picker = picker
+        out = self.run_lines("/sessions")
+        self.assertEqual(self.repl.session.id, first)
+        self.assertIn(">>> first chat", out)
+        self.assertEqual([s.id for s in self.store.list()], [second, first])  # no stray empty session
 
     def test_the_picker_opens_on_the_current_session_wherever_it_is_in_the_list(self):
         first, second, third = self.three_sessions()

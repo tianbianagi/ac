@@ -31,7 +31,8 @@ HELP = """\
 Sessions
   /new                    start a fresh session (same model, no skills)
   /sessions               pick a session from a list: type to filter, arrows, Enter;
-                          Ctrl-D deletes the highlighted one (after a y)
+                          Ctrl-D deletes the highlighted one (after a y), even the one you
+                          are in: you carry on in a new session
   /sessions N|ID|TITLE    ...or go straight to one; any other text filters the list
   /rename TITLE           rename this session
   /title                  have the model write a title for this session
@@ -375,10 +376,24 @@ class Repl:
         if not [s for s in sessions if s.id != self.session.id]:
             return self.note("there are no other sessions yet.")
         ids = [s.id for s in sessions]
+        left = []                               # the session we were in, if it gets deleted
 
-        def protect(session):
+        def delete(session):
+            self.store.delete(session.id)
             if session.id == self.session.id:
-                return "you are in this session: leave it first, or use /delete"
+                # Carry on in a fresh session, silently: the list is still on the screen, and
+                # stays open so that more sessions can be cleared out. It is announced on exit.
+                left.append(session)
+                self.session = self.store.draft(session.model)
+                self.last_usage, self.queued = None, []
+
+        def wording(session):
+            title = " ".join((session.title or "(untitled)").split())
+            if session.id == self.session.id:
+                # What matters comes first: a long title is what gets cut off at the edge.
+                return (f"Delete the session you are in (you'll continue in a new one)? y deletes "
+                        f"“{title}” for good", f"you are in a new session now · deleted “{title}”")
+            return f"Delete “{title}”? y deletes it for good", f"deleted “{title}”"
 
         chosen = self.picker(
             sessions, lambda s: render.session_label(s, self.session.id), title="Sessions",
@@ -386,10 +401,13 @@ class Repl:
             # Open on the session you are in, as /models opens on the model in use. (A session
             # with no messages yet isn't in the list.)
             start=ids.index(self.session.id) if self.session.id in ids else 0,
-            current=self.session.id, delete=lambda s: self.store.delete(s.id), protect=protect)
-        if chosen is None:
-            return self.note("stayed in this session.")
-        self._open(self.store.get(chosen.id))
+            current=self.session.id, delete=delete, wording=wording)
+        if chosen is not None:
+            return self._open(self.store.get(chosen.id))
+        if left:
+            self.note(f"deleted the session you were in (“{left[0].title or left[0].id}”).")
+            return self.banner()
+        self.note("stayed in this session.")
 
     cmd_session = cmd_ls = cmd_sessions
 
