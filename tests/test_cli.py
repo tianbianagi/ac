@@ -51,7 +51,7 @@ class CliTest(unittest.TestCase):
     def test_default_command(self):
         self.assertEqual(cli._default_command([]), ["new"])
         self.assertEqual(cli._default_command(["-m", "x"]), ["new", "-m", "x"])
-        self.assertEqual(cli._default_command(["-c"]), ["resume"])
+        self.assertEqual(cli._default_command(["-c"]), ["resume", "--latest"])
         self.assertEqual(cli._default_command(["ls"]), ["ls"])
         self.assertEqual(cli._default_command(["--help"]), ["--help"])
 

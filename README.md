@@ -21,7 +21,8 @@ ln -s "$PWD/bin/acc" ~/.local/bin/acc     # or run ./bin/acc, or python3 -m ac
 acc                          # new session
 acc -m qwen3.8:27b -s concise
 acc -c                       # continue the latest session
-acc resume ID                # id, unique id prefix, or exact title
+acc resume                   # pick a session from a list: type to filter, arrows, Enter
+acc resume ID                # ...or name one: id, unique id prefix, or exact title
 
 acc ls [--search QUERY]      # full-text search over titles and messages
 acc show ID                  acc rename ID TITLE

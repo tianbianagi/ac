@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, config, files, render, skills, titles
+from . import __version__, config, files, picker, render, skills, titles
 from .ollama import Client, OllamaError, resolve_model
 from .repl import Repl, setup_readline
 from .store import Store, StoreError
@@ -38,6 +38,8 @@ def _interactive(store, client, session):
     repl = Repl(store, client, session)
     if sys.stdin.isatty():
         setup_readline(repl)
+    if picker.available():
+        repl.picker = picker.pick
     repl.run()
 
 
@@ -51,7 +53,16 @@ def cmd_new(args):
 
 def cmd_resume(args):
     store = open_store()
-    session = store.get(args.id) if args.id else store.latest()
+    if args.id:
+        session = store.get(args.id)
+    elif args.latest or not picker.available() or len(store.list()) < 2:
+        session = store.latest()
+    else:                                   # `acc resume` alone: choose from a list
+        session = picker.pick(store.list(), render.session_label, title="Sessions",
+                              search=lambda q: store.list(search=q), key=lambda s: s.id,
+                              delete=lambda s: store.delete(s.id))
+        if session is None:
+            return 0                        # cancelled
     if session is None:
         raise StoreError(f"no sessions yet. Start one with `{config.COMMAND}`.")
     _interactive(store, Client(), session)
@@ -266,8 +277,9 @@ def build_parser():
     session_setup(p)
     p.add_argument("--title")
 
-    p = add("resume", cmd_resume, "continue a session (the latest if no ID is given)")
-    p.add_argument("id", nargs="?")
+    p = add("resume", cmd_resume, "continue a session: pick from a list, or name one")
+    p.add_argument("id", nargs="?", help="id, id prefix or title; omit to choose from a list")
+    p.add_argument("--latest", action="store_true", help="the most recent one (same as acc -c)")
 
     p = add("ls", cmd_ls, "list sessions", aliases=["list"])
     p.add_argument("--search", metavar="QUERY", help="match titles and message text")
@@ -322,11 +334,11 @@ def build_parser():
 
 
 def _default_command(argv):
-    """`acc` and `acc -m x` mean `acc new ...`; `acc -c` means `acc resume`."""
+    """`acc` and `acc -m x` mean `acc new ...`; `acc -c` means `acc resume --latest`."""
     if not argv:
         return ["new"]
     if argv[0] in ("-c", "--continue"):
-        return ["resume"] + argv[1:]
+        return ["resume", "--latest"] + argv[1:]
     if argv[0].startswith("-") and argv[0] not in ("-h", "--help", "--version"):
         return ["new"] + argv
     return argv

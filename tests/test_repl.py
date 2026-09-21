@@ -294,8 +294,8 @@ class ReplTest(unittest.TestCase):
 
     def test_switch_model_mid_conversation(self):
         self.fake.loaded = ["m1"]
-        out = self.run_lines("first", "/model", "/model 2", "second", "/model m1", "/model 1",
-                             "/model 9")
+        out = self.run_lines("first", "/models", "/models 2", "second", "/models m1", "/models 1",
+                             "/models 9")
         self.assertRegex(out, r"\* 1  m1 +0\.0 GB\n  2  m2:latest +0\.0 GB")
         self.assertIn("model set to m2:latest", out)
         self.assertIn("it isn't loaded yet", out)
@@ -437,12 +437,126 @@ class ReplTest(unittest.TestCase):
         out = self.out.getvalue()
         self.assertIn("Second", out)
         self.assertRegex(out, rf"\*\s+{second}\s+Second")
-        self.assertIn("session " + first + " (2 messages)", self.run_lines(f"/switch {first}"))
-        self.run_lines(f"/switch {first[:5]}")
+        self.assertIn("session " + first + " (2 messages)", self.run_lines(f"/sessions {first}"))
+        self.run_lines("/new", f"/sessions {first[:5]}")
         self.assertEqual(self.repl.session.id, first)
-        self.run_lines("/sessions second")
-        self.assertIn(second, self.out.getvalue().rsplit("UPDATED", 1)[1])
-        self.assertNotIn(first, self.out.getvalue().rsplit("UPDATED", 1)[1])
+        self.run_lines("/sessions second")  # an exact title, whatever its case: go there
+        self.assertEqual(self.repl.session.id, second)
+        listing = self.run_lines("/sessions first").rsplit("UPDATED", 1)[1]  # not a title: filter
+        self.assertIn(first, listing)
+        self.assertNotIn(second, listing)
+        self.assertEqual(self.repl.session.id, second)
+
+    def three_sessions(self):
+        ids = []
+        for text in ("first chat", "second chat", "third chat"):
+            self.run_lines("/new", text)
+            ids.append(self.repl.session.id)
+        return ids
+
+    def test_sessions_opens_the_picker(self):
+        first, second, third = self.three_sessions()
+        seen = {}
+
+        def picker(sessions, label, **options):
+            seen.update(options, ids=[s.id for s in sessions], labels=[label(s) for s in sessions])
+            return sessions[2]
+
+        self.repl.picker = picker
+        out = self.run_lines("/sessions")
+        self.assertEqual(seen["ids"], [third, second, first])  # everything, most recent first
+        self.assertEqual((seen["title"], seen["query"]), ("Sessions", ""))
+        self.assertEqual(seen["start"], 1)  # the cursor starts on the most recent *other* session
+        self.assertEqual(seen["labels"][0][0], "third chat")
+        self.assertIn(" · current", seen["labels"][0][1])
+        self.assertNotIn("current", seen["labels"][1][1])
+        self.assertIn(second, seen["labels"][1][1])  # the id is shown, for use on the command line
+        self.assertEqual([s.id for s in seen["search"]("second")], [second])
+        self.assertEqual(self.repl.session.id, first)
+        self.assertIn(">>> first chat", out)  # and you see where you left off
+
+    def test_sessions_can_be_deleted_from_the_picker(self):
+        first, second, third = self.three_sessions()
+
+        def picker(sessions, label, *, delete, protect, **options):
+            current, other = sessions[0], sessions[1]
+            self.assertIn("you are in this session", protect(current))
+            self.assertIsNone(protect(other))
+            delete(other)
+            return None
+
+        self.repl.picker = picker
+        out = self.run_lines("/sessions")
+        self.assertEqual([s.id for s in self.store.list()], [third, first])
+        self.assertEqual(self.store.messages(second), [])  # its messages went with it
+        self.assertEqual(self.repl.session.id, third)
+        self.assertIn("stayed in this session", out)
+
+    def test_cancelling_or_choosing_the_current_session_changes_nothing(self):
+        first, second, third = self.three_sessions()
+        self.repl.picker = lambda sessions, label, **k: None
+        self.assertIn("stayed in this session", self.run_lines("/session"))  # an alias
+        self.repl.picker = lambda sessions, label, **k: sessions[0]
+        self.assertIn("you are already in that session", self.run_lines("/sessions"))
+        self.assertEqual(self.repl.session.id, third)
+
+    def test_sessions_with_an_argument_goes_straight_there(self):
+        first, second, third = self.three_sessions()
+        self.repl.picker = lambda *a, **k: self.fail("no need to ask: the session was named")
+        self.assertIn(f"session {first} (2 messages)", self.run_lines(f"/sessions {first[:5]}"))
+        self.run_lines("/sessions second chat")  # an exact title
+        self.assertEqual(self.repl.session.id, second)
+        self.run_lines("/sessions 1")  # a number: most recent first
+        self.assertEqual(self.repl.session.id, third)
+
+    def test_sessions_with_other_text_filters_the_list(self):
+        first, second, third = self.three_sessions()
+        seen = {}
+        self.repl.picker = lambda sessions, label, **k: seen.update(k)
+        self.run_lines("/sessions chat about bread")
+        self.assertEqual(seen["query"], "chat about bread")
+
+    def test_sessions_without_a_terminal_numbers_them(self):
+        first, second, third = self.three_sessions()
+        out = self.run_lines("/sessions")
+        self.assertRegex(out, r"1\s+\*\s+" + third + r"[\s\S]*2\s+" + second + r"[\s\S]*3\s+" + first)
+        self.assertIn("/sessions N opens one of these", out)
+        self.run_lines("/sessions 3")
+        self.assertEqual(self.repl.session.id, first)
+        self.run_lines("/sessions second", "/sessions 1")  # numbers follow the list last shown
+        self.assertEqual(self.repl.session.id, second)
+        self.assertIn("there is no session number 7", self.run_lines("/sessions 7"))
+
+    def test_there_is_no_switch_command(self):
+        out = self.run_lines("hi", "/switch")
+        self.assertIn("unknown command /switch", out)
+
+    def test_sessions_with_nowhere_to_go(self):
+        self.repl.picker = lambda *a, **k: self.fail("nothing to choose between")
+        self.assertIn("there are no other sessions yet", self.run_lines("hi", "/sessions"))
+
+    def test_model_picker(self):
+        seen = {}
+
+        def picker(models, label, **options):
+            seen.update(options, labels=[label(m) for m in models])
+            return models[1]
+
+        self.repl.picker = picker
+        out = self.run_lines("/models")
+        self.assertEqual((seen["title"], seen["start"]), ("Models", 0))  # cursor on the current one
+        self.assertEqual(seen["labels"], [("m1", "0.0 GB · 1B · Q4 · current"),
+                                          ("m2:latest", "0.0 GB · 1B · Q4")])
+        self.assertIn("model set to m2:latest", out)
+        self.assertEqual(self.repl.session.model, "m2:latest")
+
+        self.repl.picker = lambda *a, **k: None
+        self.assertIn("still using m2:latest", self.run_lines("/models"))
+        self.repl.picker = lambda *a, **k: self.fail("named: no need to ask")
+        self.run_lines("/models m1")
+        self.assertEqual(self.repl.session.model, "m1")
+        self.run_lines("/model m2")  # the singular still works, as /session does
+        self.assertEqual(self.repl.session.model, "m2:latest")
 
     def test_fork(self):
         self.run_lines("one", "two")
@@ -594,7 +708,11 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(self.repl.completions("/skill "), ["add", "rm"])
         self.assertEqual(self.repl.completions("/skill add h"), ["haiku"])
         self.assertEqual(self.repl.completions("/skill rm "), ["haiku"])
-        self.assertEqual(self.repl.completions("/model m2"), ["m2:latest"])
+        self.assertEqual(self.repl.completions("/models m2"), ["m2:latest"])
+        self.assertEqual(self.repl.completions("/model m2"), ["m2:latest"])  # the alias completes too
+        self.assertEqual(self.repl.completions("/mo"), ["/models"])  # but only one name is offered
+        self.assertEqual(self.repl.completions("/se"), ["/sessions", "/set"])
+        self.assertEqual(self.repl.completions("/q"), ["/quit"])
         self.assertEqual(self.repl.completions("/think s"), ["show"])
         self.assertEqual(self.repl.completions("plain text"), [])
         (self.tmp / "notes.md").write_text("x")

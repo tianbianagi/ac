@@ -29,8 +29,9 @@ SUMMARY_HEADER = "[Summary of our earlier conversation]"
 HELP = """\
 Sessions
   /new                    start a fresh session (same model, no skills)
-  /sessions [QUERY]       list sessions, optionally searching titles and messages
-  /switch ID              switch to another session (id, id prefix, or title)
+  /sessions               pick a session from a list: type to filter, arrows, Enter;
+                          Ctrl-D deletes the highlighted one (after a y)
+  /sessions N|ID|TITLE    ...or go straight to one; any other text filters the list
   /rename TITLE           rename this session
   /title                  have the model write a title for this session
   /fork [SEQ]             branch this session (up to message SEQ) and switch to the copy
@@ -46,9 +47,11 @@ Skills and prompt
   /context                show token usage and the exact system prompt being sent
   /files                  list the files attached in this conversation
 Model
-  /model [NAME|NUMBER]    list models, or switch this session to another one
+  /models                 pick a model from a list, the same way
+  /models NAME|NUMBER     ...or switch straight to one; the conversation carries over
   /set KEY [VALUE]        set a model option (temperature, num_ctx, ...); no VALUE unsets
   /think on|off|default|show|hide
+  /markdown on|off        render replies for the terminal, or show the raw markdown
 Conversation
   /retry                  regenerate the last reply
   /edit                   edit your last message in $EDITOR and resend
@@ -193,7 +196,9 @@ class Repl:
 
     @classmethod
     def command_names(cls):
-        return sorted(n[4:] for n in dir(cls) if n.startswith("cmd_"))
+        """The commands to offer. Aliases (cmd_model = cmd_models) work but aren't advertised."""
+        return sorted(n[4:] for n in dir(cls)
+                      if n.startswith("cmd_") and getattr(cls, n).__name__ == n)
 
     # -- chatting ---------------------------------------------------------
 
@@ -279,7 +284,7 @@ class Repl:
         if error.status == 404:
             try:
                 names = ", ".join(m["name"] for m in self.client.list_models())
-                self.note(f"installed models: {names or 'none'} — change with /model NAME")
+                self.note(f"installed models: {names or 'none'} — change with /models NAME")
             except OllamaError:
                 pass
         else:
@@ -332,15 +337,46 @@ class Repl:
         self._switch(self.store.draft(self.session.model))
 
     def cmd_sessions(self, arg):
-        self.say(render.format_sessions(self.store.list(search=arg or None), self.style,
-                                        self.session.id))
+        """List sessions and move between them: one command, the way /models works for models."""
+        sessions = self.store.list()
+        if arg.isdigit() and len(arg) <= 3:     # a number from the list, not an id prefix
+            listed = self.listed or [s.id for s in sessions]
+            if not 1 <= int(arg) <= len(listed):
+                return self.error(f"there is no session number {arg}; /sessions lists them")
+            return self._open(self.store.get(listed[int(arg) - 1]))
+        if arg:
+            try:
+                return self._open(self.store.get(arg))
+            except StoreError:
+                pass                            # not an id or a title: use it to filter the list
+        if self.picker is None:                 # no terminal to draw on: number them instead
+            shown = self.store.list(search=arg) if arg else sessions
+            self.listed = [s.id for s in shown]
+            self.say(render.format_sessions(shown, self.style, self.session.id, numbered=True))
+            return self.note("/sessions N opens one of these") if shown else None
+        if not [s for s in sessions if s.id != self.session.id]:
+            return self.note("there are no other sessions yet.")
+        ids = [s.id for s in sessions]
 
-    cmd_ls = cmd_sessions
+        def protect(session):
+            if session.id == self.session.id:
+                return "you are in this session: leave it first, or use /delete"
 
-    def cmd_switch(self, arg):
-        if not arg:
-            return self.error("usage: /switch ID")
-        self._switch(self.store.get(arg))
+        chosen = self.picker(
+            sessions, lambda s: render.session_label(s, self.session.id), title="Sessions",
+            search=lambda q: self.store.list(search=q), key=lambda s: s.id, query=arg,
+            start=next(i for i, sid in enumerate(ids) if sid != self.session.id),
+            delete=lambda s: self.store.delete(s.id), protect=protect)
+        if chosen is None:
+            return self.note("stayed in this session.")
+        self._open(self.store.get(chosen.id))
+
+    cmd_session = cmd_ls = cmd_sessions
+
+    def _open(self, session):
+        if session.id == self.session.id:
+            return self.note("you are already in that session.")
+        self._switch(session)
         self.show_tail()
 
     def cmd_rename(self, arg):
@@ -469,20 +505,29 @@ class Repl:
 
     # -- commands: model --------------------------------------------------
 
-    def cmd_model(self, arg):
+    def cmd_models(self, arg):
         models = self.client.list_models()
-        if not arg:
-            width = max((len(m["name"]) for m in models), default=0)
+        names = [m["name"] for m in models]
+        if arg.isdigit():
+            if not 1 <= int(arg) <= len(models):
+                return self.error(f"no model number {arg}; /models lists them")
+            name = names[int(arg) - 1]
+        elif arg:
+            name = resolve_model(self.client, arg)
+        elif self.picker is None:               # no terminal to draw on: number them instead
+            width = max(map(len, names), default=0)
             for i, m in enumerate(models, 1):
                 mark = "*" if m["name"] == self.session.model else " "
                 self.say(f"{mark} {i}  {m['name']:<{width}}  {m.get('size', 0) / 1e9:>6.1f} GB")
-            return self.note("switch with /model NAME or /model NUMBER; the conversation carries over")
-        if arg.isdigit():
-            if not 1 <= int(arg) <= len(models):
-                return self.error(f"no model number {arg}; /model lists them")
-            name = models[int(arg) - 1]["name"]
+            return self.note("switch with /models NAME or /models NUMBER; the conversation carries over")
         else:
-            name = resolve_model(self.client, arg)
+            chosen = self.picker(
+                models, lambda m: render.model_label(m, self.session.model), title="Models",
+                key=lambda m: m["name"],
+                start=names.index(self.session.model) if self.session.model in names else 0)
+            if chosen is None:
+                return self.note(f"still using {self.session.model}.")
+            name = chosen["name"]
         if name == self.session.model:
             return self.note(f"already using {name}")
         self.session.model = name
@@ -497,6 +542,8 @@ class Repl:
             size = next((m.get("size", 0) for m in models if m["name"] == name), 0)
             self.note(f"it isn't loaded yet: the next reply waits while Ollama loads "
                       f"{size / 1e9:.1f} GB")
+
+    cmd_model = cmd_models
 
     def cmd_set(self, arg):
         key, _, raw = arg.partition(" ")
