@@ -39,6 +39,18 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.fork(untitled.id).title_source, "model")
         self.assertEqual(self.store.fork(untitled.id, title="my branch").title_source, "user")
 
+    def test_named_paths(self):
+        self.assertEqual(self.store.resources(), {})
+        self.store.set_resource("mom", "/vault/mom/*.md")
+        self.store.set_resource("plan", "/notes/plan.md")
+        self.store.set_resource("mom", "/vault/mum/*.md")  # naming again moves the name
+        self.assertEqual(self.store.resources(), {"mom": "/vault/mum/*.md", "plan": "/notes/plan.md"})
+        self.assertTrue(self.store.delete_resource("plan"))
+        self.assertFalse(self.store.delete_resource("plan"))
+        session = self.make()
+        self.store.delete(session.id)
+        self.assertEqual(self.store.resources(), {"mom": "/vault/mum/*.md"})  # not tied to a session
+
     def test_update(self):
         s = self.make(skills=["a"])
         s.title, s.model, s.skills = "renamed", "m2", []

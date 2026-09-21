@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -131,6 +132,16 @@ class ReplTest(unittest.TestCase):
         self.assertEqual([c for r, c in self.contents() if r == "user"],
                          ["first\nsecond\nthird", "one liner", "/etc/hosts is a file"])
 
+    def test_every_alias_is_listed_in_help_and_nowhere_else(self):
+        aliases = {n[4:] for n in dir(Repl) if n.startswith("cmd_")} - set(Repl.command_names())
+        self.assertEqual(aliases, {"file", "session", "model", "ls", "rm", "q", "exit"})
+        shown = self.run_lines("/help")
+        line = next(l + shown.split(l)[1].split("\n")[1] for l in shown.split("\n")
+                    if l.startswith("Shorter names"))
+        for alias in aliases:
+            self.assertIn(f"/{alias}", line)       # discoverable...
+            self.assertNotIn(f"/{alias}", self.repl.completions(f"/{alias[:1]}"))  # ...not offered
+
     def test_unknown_command_suggests(self):
         out = self.run_lines("/skils")
         self.assertIn("unknown command /skils. Did you mean /skills?", out)
@@ -243,7 +254,7 @@ class ReplTest(unittest.TestCase):
         note = self.tmp / "notes.md"
         note.write_text("alpha ``` fence")
         out = self.run_lines("/files", f"read {note}", "/files")
-        self.assertIn("no files in this conversation", out)
+        self.assertIn("no files yet", out)
         self.assertIn(f"#1  {note} (text, 15 B)", out)
 
         note.write_text("beta")
@@ -293,6 +304,140 @@ class ReplTest(unittest.TestCase):
         exported = (self.tmp / "o.md").read_text()
         self.assertRegex(exported, r"\*attached: and \d+ more files \(\d+ B\)\*")
         self.assertLess(exported.count("*attached:"), 3 + 4 + 1)  # summarised, not 11 lines
+
+    def vault(self):
+        folder = self.tmp / "Mobile Documents" / "my vault" / "mom"
+        folder.mkdir(parents=True)
+        (folder / "visit.md").write_text("visit on sunday")
+        (folder / "recipe.md").write_text("plum cake")
+        (folder / "photo.png").write_bytes(b"\x89PNG")
+        return folder
+
+    def test_attach_takes_the_rest_of_the_line_as_the_path(self):
+        folder = self.vault()
+        out = self.run_lines(f"/files {folder}/*.md", "what is planned?")
+        self.assertIn(f"queued 2 files from {folder}/*.md (24 B)", out)
+        self.assertIn("they go with your next message", out)
+        self.assertEqual(len(self.fake.requests), 1)  # /files itself sends nothing
+        sent = self.fake.requests[0]["messages"][0]["content"]
+        self.assertIn("visit on sunday", sent)
+        self.assertIn("plum cake", sent)
+        self.assertTrue(sent.endswith("what is planned?"))
+        self.run_lines("and then?")
+        self.assertEqual(len(self.store.messages(self.repl.session.id)[2].attachments), 0)  # once
+
+    def test_attach_accepts_quoted_and_escaped_paths_and_single_files(self):
+        folder = self.vault()
+        escaped = str(folder / "visit.md").replace(" ", "\\ ")
+        out = self.run_lines(f'/files "{folder}/recipe.md"', f"/files {escaped}", "/files",
+                             f"/files {folder}/visit.md")
+        self.assertIn(f"queued {folder}/recipe.md (text, 9 B)", out)
+        self.assertIn(f"queued {folder}/visit.md (text, 15 B)", out)
+        self.assertIn("it goes with your next message", out)
+        self.assertIn("that is already queued", out)
+        self.assertEqual([Path(a.path).name for a in self.repl.queued], ["recipe.md", "visit.md"])
+
+    def test_a_named_path_can_be_used_as_at_name_in_any_session(self):
+        folder = self.vault()
+        out = self.run_lines(f"/files {folder}/*.md Mom", "/files clear")
+        self.assertIn(f"@mom now means {folder}/*.md", out)
+        self.assertIn("queued 2 files from @mom (24 B)", out)
+        self.assertEqual(self.store.resources(), {"mom": f"{folder}/*.md"})
+
+        (folder / "new.md").write_text("added later")
+        out = self.run_lines("/new", "what does @mom say? and @Mom again")
+        self.assertIn("attached 3 files from @mom", out)  # read afresh, in another session, once
+        self.assertIn("added later", self.fake.requests[-1]["messages"][0]["content"])
+        self.assertEqual(self.store.messages(self.repl.session.id)[0].content,
+                         "what does @mom say? and @Mom again")  # stored as typed
+
+        out = self.run_lines("/files mom", "/files @mom", "/files")
+        self.assertIn("queued 3 files from @mom", out)
+        self.assertIn("that is already queued", out)
+        self.assertRegex(out, r"@mom\s+" + str(folder).replace("/", "\\/"))
+
+    def test_every_natural_way_of_adding_a_name(self):
+        folder = self.vault()
+        pattern = f"{folder}/*.md"
+        escaped = pattern.replace(" ", "\\ ")
+        forms = {"a": f'"{pattern}" a', "d": f"{pattern} d", "e": f"{escaped} e",
+                 "f": f"'{pattern}' @F"}
+        for name, typed in forms.items():
+            out = self.run_lines(f"/files {typed}", "/files clear")
+            self.assertIn(f"@{name} now means {pattern}", out, typed)
+        self.assertEqual(self.store.resources(), {name: pattern for name in forms})
+
+    def test_a_path_is_found_whole_before_a_name_is_looked_for(self):
+        folder = self.vault()
+        tricky = folder / "my draft"               # a real file whose last word could be a name
+        tricky.write_text("tricky")
+        out = self.run_lines(f"/files {tricky}")
+        self.assertIn(f"queued {tricky} (text, 6 B)", out)
+        self.assertEqual(self.store.resources(), {})
+        out = self.run_lines(f"/files {folder}/nope.md x", f"/files {folder}/visit.md bad/name")
+        self.assertIn(f"error: nothing matches {folder}/nope.md x. To name a path: "
+                      "/files PATH NAME", out)
+        self.assertIn("error: nothing matches", self.run_lines(f"/files {folder}/*.md as mom"))
+        self.assertIn("error: 'bad/name' can't be a name", out)  # the path was fine; say what wasn't
+        self.assertEqual(self.store.resources(), {})
+
+    def test_a_name_beats_a_file_of_the_same_name_and_single_files_can_be_named(self):
+        folder = self.vault()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, Path(__file__).parent)
+        (self.tmp / "plan").write_text("a file called plan")
+        self.run_lines(f"/files {folder}/visit.md plan", "/files clear", "read @plan")
+        sent = self.fake.requests[-1]["messages"][0]["content"]
+        self.assertIn("visit on sunday", sent)
+        self.assertNotIn("a file called plan", sent)
+
+    def test_attach_problems(self):
+        folder = self.vault()
+        out = self.run_lines("/files /no/such/thing", f"/files {folder}/*.md bad name",
+                             f"/files {folder}/*.md clear", f"/files {folder}/photo.png pic",
+                             "/files forget nothing", f"/files {folder}/*.md mom")
+        self.assertIn("error: nothing matches /no/such/thing", out)
+        self.assertIn(f"error: nothing matches {folder}/*.md bad name", out)  # "…/*.md bad" isn't there
+        self.assertIn("'clear' can't be a name", out)
+        self.assertIn("there is no @nothing", out)
+        self.assertIn("m1 can't see images", self.run_lines("look"))  # named image: sent as one
+
+        shutil.rmtree(folder)
+        out = self.run_lines("what about @mom ?", "/files mom")
+        self.assertEqual(out.count(f"@mom is {folder}/*.md, which isn't there now"), 2)
+        self.assertIn("forgot @mom", self.run_lines("/files forget @mom"))
+        self.assertEqual(self.store.resources(), {"pic": f"{folder}/photo.png"})
+
+    def test_queued_files_do_not_follow_you_to_another_session(self):
+        folder = self.vault()
+        out = self.run_lines("first", f"/files {folder}/visit.md", "/new", "hello")
+        self.assertIn("dropped 1 queued attachments", out)
+        self.assertEqual(self.store.messages(self.repl.session.id)[0].attachments, [])
+
+    def test_a_file_queued_and_named_in_the_message_is_sent_once(self):
+        folder = self.vault()
+        self.run_lines(f"/files {folder}/visit.md", f'compare with "{folder}/visit.md"')
+        self.assertEqual(self.fake.requests[0]["messages"][0]["content"].count("<file "), 1)
+
+    def test_files_alone_shows_everything_in_one_place(self):
+        folder = self.vault()
+        out = self.run_lines(f'read "{folder}/visit.md"', f"/files {folder}/*.md mom", "/files")
+        listing = out.rsplit("they go with your next message", 1)[1]
+        self.assertRegex(listing, r"in this conversation.*\n  #1  " + str(folder) + r"/visit.md \(text")
+        self.assertRegex(listing, r"queued for your next message:\n.*2 files from @mom")
+        self.assertRegex(listing, r"names.*\n  @mom\s+" + str(folder))
+        self.assertIn("unknown command /attach", self.run_lines("/attach x"))  # one command, not two
+        self.run_lines("/file clear")  # the singular works, as /session and /model do
+        self.assertEqual(self.repl.queued, [])
+
+    def test_names_complete(self):
+        self.store.set_resource("mom", "/x/mom/*.md")
+        self.store.set_resource("money", "/x/money.md")
+        self.assertEqual(self.repl.completions("/files mo"), ["mom", "money"])
+        self.assertEqual(self.repl.completions("/files @mon"), ["@money"])
+        self.assertEqual(self.repl.completions("what does @mo"), ["@mom", "@money"])
+        (self.tmp / "data").mkdir()
+        self.assertEqual(self.repl.completions(f"/files {self.tmp}/da"), [f"{self.tmp}/data/"])
 
     def test_resume_shows_what_was_attached(self):
         note = self.tmp / "notes.md"

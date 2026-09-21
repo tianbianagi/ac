@@ -74,8 +74,17 @@ CREATE INDEX attachments_message ON attachments(message_id);
 # Who wrote the title: "auto" (the first message), "model" or "user".
 TITLE_SOURCE_SCHEMA = "ALTER TABLE sessions ADD COLUMN title_source TEXT;"
 
+# Names the user gave to paths (/files PATH NAME), usable from every session as @NAME.
+RESOURCES_SCHEMA = """
+CREATE TABLE resources (
+    name       TEXT PRIMARY KEY,
+    path       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+"""
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
-MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA]
+MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA]
 
 
 class StoreError(Exception):
@@ -316,6 +325,23 @@ class Store:
                    WHERE orig.session_id = ? AND orig.seq <= ?""",
                 (new.id, src.id, at_seq))
         return self.get(new.id)
+
+    # -- named paths ------------------------------------------------------
+
+    def resources(self):
+        """{name: path} for every named path."""
+        return {r["name"]: r["path"] for r in
+                self.db.execute("SELECT name, path FROM resources ORDER BY name")}
+
+    def set_resource(self, name, path):
+        with self.db:
+            self.db.execute(
+                """INSERT INTO resources (name, path, created_at) VALUES (?, ?, ?)
+                   ON CONFLICT(name) DO UPDATE SET path = excluded.path""", (name, path, _now()))
+
+    def delete_resource(self, name):
+        with self.db:
+            return self.db.execute("DELETE FROM resources WHERE name = ?", (name,)).rowcount > 0
 
     # -- messages ---------------------------------------------------------
 

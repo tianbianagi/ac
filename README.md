@@ -73,6 +73,14 @@ attached ~/notes/plan.md (text, 3.1 KB)
   text (about 100k tokens; `max_attach_kb` in `config.toml` changes that) and tells you what it
   left out. What you spell out is taken as meant, so `~/.config/ac/**` works although `.config`
   is hidden. You get one line back, `attached 14 files from src/** (138 KB)`; `/files` lists them.
+- **`/files` and names.** `/files` on its own lists the files in the conversation, what is
+  queued and your names. `/files PATH` queues files for your next message. Everything after the
+  command is the path, so one with spaces needs no quotes:
+  `/files ~/Library/Mobile Documents/notes/*.md`. Add a NAME as the last word and the path gets a name: after
+  `/files ~/vault/mom/*.md mom`, writing `@mom` in any message, in any session or in
+  `acc ask`, attaches whatever that path holds at that moment. `/files mom` queues it,
+  `/files forget mom` removes a name and `/files clear` empties the queue. Names complete with Tab. A name wins over a file of the
+  same name, and if its path has gone you are told rather than left guessing.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
   `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
   (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A
@@ -81,7 +89,7 @@ attached ~/notes/plan.md (text, 3.1 KB)
   elsewhere `pdftotext` (poppler) is used if installed, and scans can't be rendered.
 - The file is **snapshotted when you send the message** and stays in the conversation from then
   on, so later turns can refer to it and the history always matches what the model really saw.
-  Name the path again to send its current contents. `/files` lists what a conversation holds.
+  Name the path again to send its current contents.
   Exports name the files that were attached but never include their contents.
 - This is not a tool the model can call. Only a path that *you type* is ever read: nothing in a
   skill or in the model's output can make `acc` open a file.

@@ -96,6 +96,16 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(cli.main(["ask", "--no-save", "hi"]), 0)
         self.assertEqual(out.getvalue(), "ok\n")
 
+    def test_names_work_in_one_shots_too(self):
+        note = self.tmp / "my notes" / "plan.md"
+        note.parent.mkdir()
+        note.write_text("ship on friday")
+        self.store().set_resource("plan", str(note))
+        code, out, err = self.ac("ask", "when do we ship, per @plan ?")
+        self.assertEqual(code, 0)
+        self.assertIn("attached", err)
+        self.assertIn("ship on friday", self.fake.requests[-1]["messages"][0]["content"])
+
     def test_ask_no_save_and_empty(self):
         code, out, _ = self.ac("ask", "--no-save", "hi")
         self.assertEqual((code, out), (0, "ok\n"))

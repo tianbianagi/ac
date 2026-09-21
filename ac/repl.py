@@ -45,7 +45,11 @@ Skills and prompt
   /skill rm NAME          detach a skill
   /system [TEXT|clear]    show, set or clear this session's own system text
   /context                show token usage and the exact system prompt being sent
-  /files                  list the files attached in this conversation
+  /files                  list the files in this conversation, what is queued, and your names
+  /files PATH [NAME]      queue files for your next message. Spaces in the path need no
+                          quotes. A NAME as the last word makes @NAME stand for the path, in
+                          every session: /files ~/my notes/*.md notes
+                          Also: /files NAME, /files forget NAME, /files clear
 Model
   /models                 pick a model from a list, the same way
   /models NAME|NUMBER     ...or switch straight to one; the conversation carries over
@@ -58,6 +62,8 @@ Conversation
   /undo                   drop the last exchange
   /compact                continue in a new session seeded with a summary of this one
   /help  /quit
+Shorter names also work: /file /session /model (singulars), /ls (= /sessions), /rm (= /delete),
+/q or /exit (= /quit).
 Files: name a path in your message (/abs, ~/home, ./relative, or @name for a bare filename) and
 its contents are sent along: text files, PDFs (report.pdf#10-20 picks pages), images (for
 models with vision) and directory listings. A * makes it a pattern: src/** sends every file
@@ -111,6 +117,7 @@ class Repl:
         self.markdown = config.markdown()  # only takes effect where the output is a terminal
         self.picker = None          # picker.pick, when there is a real terminal to run it on
         self.listed = []            # ids as last numbered by /sessions, for /sessions N
+        self.queued = []            # attachments from /files PATH, waiting for the next message
         self.last_usage = None  # (tokens used, context length) after the latest reply
 
     # -- output -----------------------------------------------------------
@@ -209,7 +216,9 @@ class Repl:
             if not s.title:
                 s.title, s.title_source = make_title(text), "auto"
             self.store.save(s)
-        attachments, problems = files.collect(text)
+        queued, self.queued = self.queued, []
+        found, problems = files.collect(text, self.store.resources(), already=queued)
+        attachments = queued + found
         for problem in problems:
             self.warn(problem)
         for line in files.announce(attachments):
@@ -320,6 +329,10 @@ class Repl:
         return True
 
     def _switch(self, session):
+        if self.queued:
+            self.note(f"dropped {len(self.queued)} queued attachments: they were for the session "
+                      "you left")
+            self.queued = []
         self.session = session
         self.last_usage = None
         self.banner()
@@ -479,14 +492,76 @@ class Repl:
         self.note("system text cleared" if arg == "clear" else "system text set")
 
     def cmd_files(self, arg):
+        """Everything about files in one place, the way /sessions and /models work: on its own
+        it lists; with a path it queues files for the next message, and can name the path."""
+        names = self.store.resources()
+        action, _, rest = arg.partition(" ")
+        if not arg:
+            return self._show_files(names)
+        if action == "clear" and not rest:
+            self.queued = []
+            return self.note("nothing is queued now.")
+        if action == "forget":
+            name = rest.strip().lstrip("@").lower()
+            done = self.store.delete_resource(name)
+            return self.note(f"forgot @{name}" if done else f"there is no @{name}")
+
+        ref = self._named_or_path(arg, names)
+        if ref is None:                         # not a path as it stands: is a name on the end?
+            for path, name in files.name_splits(arg):
+                ref = files.resolve(path, explicit=True)
+                if ref is not None:
+                    break
+            else:
+                return self.error(f"nothing matches {files.clean_path(arg)}. To name a path: "
+                                  "/files PATH NAME")
+            if not files.NAME.fullmatch(name) or name in ("clear", "forget"):
+                return self.error(f"'{name}' can't be a name: use letters, digits, - and _")
+            self.store.set_resource(name, files.portable(path))
+            self.note(f"@{name} now means {files.display_path(files.portable(path))}")
+            ref = ref._replace(label=f"@{name}")
+        got, problems = files.read_refs([ref], already=self.queued)
+        for problem in problems:
+            self.warn(problem)
+        self.queued += got
+        for line in files.announce(got, verb="queued"):
+            self.note(line)
+        if got:
+            self.note("it goes with your next message" if len(got) == 1
+                      else "they go with your next message")
+        elif not problems:
+            self.note("that is already queued.")
+
+    cmd_file = cmd_files
+
+    def _named_or_path(self, arg, names):
+        word = arg.strip().lstrip("@").lower()
+        if word in names:
+            ref = files.resolve(names[word], explicit=True)
+            if ref is None:
+                self.warn(f"@{word} is {files.display_path(names[word])}, which isn't there now")
+            return ref._replace(label=f"@{word}") if ref else None
+        return files.resolve(files.clean_path(arg), explicit=True)
+
+    def _show_files(self, names):
         attached = [(m, a) for m in self.store.messages(self.session.id) for a in m.attachments]
-        if not attached:
-            return self.note("no files in this conversation. Name a path in a message "
-                             "(/path, ~/path, ./path or @name) and it is read and sent along.")
-        for m, a in attached:
-            self.say(f"#{m.seq}  {files.describe(a)}")
-        self.note("these are snapshots from when each message was sent; name a path again to "
-                  "send its current contents")
+        if attached:
+            self.note("in this conversation (as they were when each message was sent):")
+            for m, a in attached:
+                self.say(f"  #{m.seq}  {files.describe(a)}")
+        if self.queued:
+            self.note("queued for your next message:")
+            for line in files.announce(self.queued, verb=" "):
+                self.say(line)
+        if names:
+            self.note("names (write @NAME in a message):")
+            for name, path in names.items():
+                self.say(f"  @{name:<14} {self.style.dim(files.display_path(path))}")
+        if not (attached or self.queued or names):
+            self.note("no files yet. Name a path in a message (/path, ~/path, ./path, src/** or "
+                      "@name) and it is read and sent along.")
+        self.note("/files PATH [NAME] queues files for your next message · /files forget NAME "
+                  "· /files clear")
 
     def cmd_context(self, arg):
         s = self.session
@@ -655,7 +730,13 @@ class Repl:
             commands = [f"/{n}" for n in self.command_names() if f"/{n}".startswith(last)]
             if commands:
                 return commands
-        if last.startswith(("/", "~", "./", "../", "@")):
+        if last.startswith("@") or (is_command and words[0] in ("/files", "/file") and len(words) == 2
+                                    and not last.startswith(("/", "~", "."))):
+            marker = "@" if last.startswith("@") else ""
+            named = [f"{marker}{n}" for n in self.store.resources()
+                     if n.startswith(last[len(marker):].lower())]
+            return named + (files.complete(last) if marker else [])
+        if last.startswith(("/", "~", "./", "../")):
             return files.complete(last)  # a path, in a message or as a command's argument
         if not is_command or len(words) == 1:
             return []

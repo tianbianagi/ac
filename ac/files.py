@@ -28,7 +28,9 @@ JUNK_DIRS = {"node_modules", "__pycache__", "venv", "env", "dist", "build", "tar
 
 # One thing named in a message: a file or directory (path, maybe PDF pages), or a pattern such as
 # src/** together with the files it matched.
-Ref = namedtuple("Ref", ["path", "pages", "matches"], defaults=[None, None])
+# label is what to call it when telling the user: "@mom" for a named path.
+Ref = namedtuple("Ref", ["path", "pages", "matches", "label"], defaults=[None, None, None])
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 # A double-quoted phrase, a single-quoted phrase, or a bare word that may contain "\ ".
@@ -69,8 +71,27 @@ def _existing(word):
         return None
 
 
-def find_refs(text):
+def resolve(word, explicit=False):
+    """The Ref for one path or pattern, exactly as written (spaces and all), or None."""
+    if not (explicit or _looks_like_path(word)):
+        return None
+    if "*" in word:
+        matches = expand(word)
+        return Ref(word, None, matches) if matches else None
+    path = _existing(word)
+    if path is None and "#" in word:
+        base, _, pages = word.rpartition("#")
+        if base.lower().endswith(".pdf") and _PAGES.fullmatch(pages):
+            path = _existing(base)
+            return Ref(path, pages) if path else None
+    return Ref(path) if path else None
+
+
+def find_refs(text, names=None, problems=None):
     """What a message names, as Refs without duplicates.
+
+    names maps the user's own names to paths: @mom then stands for whatever /files named mom.
+    A name whose path has gone is reported in problems rather than silently ignored.
 
     A word counts when it looks like a path (starts with / or ~, or contains a /) or is marked
     with a leading @, which is how to name a bare file in the current directory: @notes.md.
@@ -78,26 +99,54 @@ def find_refs(text):
     A word with a * in it is a pattern: src/** is every file under src, docs/**/*.md only the
     markdown. A directory named without one contributes just a listing of itself.
     """
-    found = []
+    found, names = [], names or {}
     for word, explicit in _candidates(text):
-        if not (explicit or _looks_like_path(word)):
-            continue
-        if "*" in word:
-            matches = expand(word)
-            ref = Ref(word, None, matches) if matches else None
+        if explicit and word.lower() in names:
+            ref = resolve(names[word.lower()], explicit=True)
+            if ref is None:
+                if problems is not None and f"@{word}" not in " ".join(problems):
+                    problems.append(f"@{word.lower()} is {display_path(names[word.lower()])}, "
+                                    "which isn't there now")
+                continue
+            ref = ref._replace(label=f"@{word.lower()}")
         else:
-            ref = Ref(_existing(word))
-            if ref.path is None and "#" in word:
-                base, _, pages = word.rpartition("#")
-                if base.lower().endswith(".pdf") and _PAGES.fullmatch(pages):
-                    ref = Ref(_existing(base), pages)
-        if ref is not None and ref.path is not None and ref not in found:
+            ref = resolve(word, explicit)
+        if ref is not None and ref._replace(label=None) not in [r._replace(label=None)
+                                                                for r in found]:
             found.append(ref)
     return found
 
 
 def find_paths(text):
     return [ref.path for ref in find_refs(text) if ref.matches is None]
+
+
+def clean_path(text):
+    """A path typed after /files: the whole of it is the path, so spaces need no quoting, but
+    quotes and the backslashes a terminal adds when a file is dragged in are accepted too."""
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return re.sub(r"\\(.)", r"\1", text)
+
+
+def name_splits(text):
+    """The ways '"PATH" NAME' or "PATH NAME" can be read, as (path, name) pairs. The caller
+    tries the whole text as a path first, so a path that itself contains spaces is found whole
+    before its last word is ever taken for a name."""
+    text, splits = text.strip(), []
+    quoted = re.fullmatch(r"""(["'])(.+)\1\s+(\S+)""", text)
+    if quoted:
+        splits.append((quoted.group(2), quoted.group(3)))
+    before, sep, after = text.rpartition(" ")
+    if sep:
+        splits.append((clean_path(before), after))
+    return [(path, name.lstrip("@").lower()) for path, name in splits]
+
+
+def portable(path):
+    """A path or pattern made independent of the current folder, for saving under a name."""
+    return os.path.abspath(os.path.expanduser(path))
 
 
 def expand(pattern):
@@ -300,18 +349,19 @@ def read_pattern(pattern, paths, already=()):
     return attachments, notes
 
 
-def collect(text):
-    """Attachments for everything named in a message, plus lines the user should see."""
+def read_refs(refs, already=()):
+    """Attachments for Refs, skipping files in `already`, plus lines the user should see."""
     attachments, problems = [], []
-    refs = find_refs(text)
-    if len(refs) > MAX_ATTACHMENTS:
-        problems.append(f"only the first {MAX_ATTACHMENTS} of {len(refs)} paths were attached")
-    for ref in refs[:MAX_ATTACHMENTS]:
+    for ref in refs:
         try:
             if ref.matches is not None:
-                got, notes = read_pattern(ref.path, ref.matches, attachments)
+                got, notes = read_pattern(ref.label or ref.path, ref.matches,
+                                          list(already) + attachments)
             else:
                 got, notes = read_all(ref.path, ref.pages)
+                # The note tells report.pdf#2-3 from report.pdf#5: same path, different pages.
+                taken = {(a.path, a.note) for a in list(already) + attachments}
+                got = [a for a in got if (a.path, a.note) not in taken]
             attachments += got
             problems += notes
         except FileError as e:
@@ -319,17 +369,28 @@ def collect(text):
     return attachments, problems
 
 
-def announce(attachments):
+def collect(text, names=None, already=()):
+    """Attachments for everything named in a message, plus lines the user should see."""
+    problems = []
+    refs = find_refs(text, names, problems)
+    if len(refs) > MAX_ATTACHMENTS:
+        problems.append(f"only the first {MAX_ATTACHMENTS} of {len(refs)} paths were attached")
+    attachments, notes = read_refs(refs[:MAX_ATTACHMENTS], already)
+    return attachments, problems + notes
+
+
+def announce(attachments, verb="attached"):
     """Lines telling the user what was attached: one per file, or one per pattern."""
     lines, groups = [], {}
     for a in attachments:
         if a.group:
             groups.setdefault(a.group, []).append(a)
         else:
-            lines.append(f"attached {describe(a)}")
+            lines.append(f"{verb} {describe(a)}")
     for pattern, items in groups.items():
-        lines.append(f"attached {len(items)} files from {pattern} "
-                     f"({_size(sum(a.size for a in items))}); /files lists them")
+        lines.append(f"{verb} {len(items)} files from {pattern} "
+                     f"({_size(sum(a.size for a in items))})"
+                     + ("; /files lists them" if verb == "attached" else ""))
     return lines
 
 
