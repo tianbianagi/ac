@@ -700,6 +700,31 @@ class ReplTest(unittest.TestCase):
             self.run_lines("/export")
         self.assertTrue((self.tmp / "from-env" / f"{name}.md").is_file())
 
+    def test_exports_use_the_names_from_the_config(self):
+        (self.tmp / "config" / "ac").mkdir(parents=True)
+        (self.tmp / "config" / "ac" / "config.toml").write_text(
+            'user_name = "Sam"\nassistant_name = "Robin"\n')
+        self.fake.reply("Hello!")
+        self.fake.reply("A Greeting")
+        def chat(*args, **kw):
+            yield "content", "partial"
+            raise KeyboardInterrupt
+        self.run_lines("hi")
+        with mock.patch.object(self.repl.client, "chat", chat):
+            self.run_lines("again")
+        self.run_lines(f"/export md {self.tmp / 'o.md'}", f"/export json {self.tmp / 'o.json'}")
+        text = (self.tmp / "o.md").read_text()
+        self.assertIn("## Sam\n\nhi", text)
+        self.assertIn("## Robin\n\nHello!", text)
+        self.assertIn("## Robin (interrupted)\n\npartial", text)
+        self.assertNotRegex(text, r"## (User|Assistant)")
+        data = json.loads((self.tmp / "o.json").read_text())
+        self.assertEqual(data["names"], {"user": "Sam", "assistant": "Robin"})
+        self.assertEqual([m["role"] for m in data["messages"]][:2], ["user", "assistant"])
+        # Labels for the reader only: the model is never told who it is supposed to be.
+        self.assertNotIn("Robin", json.dumps(self.fake.requests))
+        self.assertNotIn("Sam", json.dumps(self.fake.requests))
+
     def test_export_problems_are_reported_not_fatal(self):
         (self.tmp / "config" / "ac").mkdir(parents=True)
         (self.tmp / "config" / "ac" / "config.toml").write_text("export_dir = [broken\n")

@@ -56,6 +56,14 @@ def export_dir():
     return Path(str(raw)).expanduser() if raw else None
 
 
+def speaker_names():
+    """What exports call each side of the conversation: user_name and assistant_name in
+    config.toml. Display only: the model is never told these names."""
+    chosen = settings()
+    return {"user": str(chosen.get("user_name") or "User"),
+            "assistant": str(chosen.get("assistant_name") or "Assistant")}
+
+
 def markdown():
     """Whether replies are rendered as markdown: $AC_MARKDOWN, then markdown in config.toml."""
     env = os.environ.get("AC_MARKDOWN")

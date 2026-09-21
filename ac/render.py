@@ -230,8 +230,9 @@ def to_markdown(session, messages, thinking=False):
              f"- skills: {skills_label(session.skills)}", f"- created: {session.created_at}"]
     if session.system:
         lines += ["", "## System", "", session.system]
+    names = config.speaker_names()
     for m in messages:
-        lines += ["", f"## {m.role.capitalize()}" + ("" if m.status == "complete"
+        lines += ["", f"## {names.get(m.role, m.role.capitalize())}" + ("" if m.status == "complete"
                                                      else f" ({m.status})"), ""]
         if thinking and m.thinking:
             lines += ["<details><summary>thinking</summary>", "", m.thinking.strip(), "",
@@ -253,6 +254,7 @@ def to_json(session, messages):
         "system": session.system, "options": session.options, "skills": session.skills,
         "parent_id": session.parent_id, "forked_at_seq": session.forked_at_seq,
         "created_at": session.created_at, "updated_at": session.updated_at,
+        "names": config.speaker_names(),  # roles below stay "user"/"assistant" for programs
         "messages": [{**{k: getattr(m, k) for k in keep},
                       "attachments": [{"path": a.path, "kind": a.kind, "bytes": a.size,
                                        "note": a.note} for a in m.attachments]}

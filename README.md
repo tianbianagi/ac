@@ -134,12 +134,20 @@ export_dir = "~/Documents/chats"
 
 # Render replies as markdown in the terminal (default true).
 markdown = true
+
+# What exports call the two sides of the conversation (default "User" and "Assistant").
+user_name = "Sam"
+assistant_name = "Robin"
 ```
 
 Exports are named `DATE TITLE.md`, for example `2026-09-20 Planning a Trip to Lisbon.md`. The
 date is the day the session began, so exporting a session again updates its file rather than
 adding another. Without an `export_dir` they go to the current folder. A filename given to
 `/export` or `-o` is used exactly as written.
+
+The names only label exported transcripts (`## Sam`, `## Robin`). They are never sent to the
+model, so they don't give it a persona; JSON exports keep `"role": "user"`/`"assistant"` and list
+the names once at the top.
 
 A session starts out titled with its first message. Before its first export the model is asked,
 once, for a proper title (a short separate request that ignores the session's skills), and that
