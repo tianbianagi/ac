@@ -848,7 +848,7 @@ class ReplTest(unittest.TestCase):
         first, second, third = self.three_sessions()
 
         def picker(sessions, label, *, delete, wording, **options):
-            self.assertNotIn("protect", options)  # nothing in this list is off limits
+            self.assertEqual([options["protect"](s) for s in sessions], [None] * 3)  # all fair game
             other = sessions[1]
             self.assertEqual(wording(other), ("Delete “second chat”? y deletes it for good",
                                               "deleted “second chat”"))
@@ -919,8 +919,31 @@ class ReplTest(unittest.TestCase):
         self.repl.picker = lambda sessions, label, **options: seen.update(options)
         self.run_lines(f"/sessions {first}", "/sessions")  # now in the oldest: last in the list
         self.assertEqual((seen["start"], seen["current"]), (2, first))
-        self.run_lines("/new", "/sessions")  # a session with no messages yet isn't listed
-        self.assertEqual(seen["start"], 0)
+        self.run_lines("/new", "/sessions")  # a session with no messages yet is listed first
+        self.assertEqual((seen["start"], seen["current"]), (0, self.repl.session.id))
+
+    def test_a_session_with_no_messages_yet_is_in_the_list_too(self):
+        first, second, third = self.three_sessions()
+        seen = {}
+
+        def picker(sessions, label, **options):
+            seen.update(options, sessions=sessions, labels=[label(s) for s in sessions])
+            return sessions[0]
+
+        self.repl.picker = picker
+        out = self.run_lines("/new", "/sessions")
+        new = self.repl.session.id
+        self.assertEqual([s.id for s in seen["sessions"]], [new, third, second, first])
+        self.assertEqual(seen["labels"][0], ("(new session)", f"{new} · new · 0 msgs · current"))
+        self.assertIn("you are already in that session", out)  # choosing it changes nothing
+        self.assertIn("nothing to delete", seen["protect"](seen["sessions"][0]))
+        self.assertIsNone(seen["protect"](seen["sessions"][1]))
+        self.assertEqual(len(self.store.list()), 3)  # and listing it did not save it
+
+        self.repl.picker = None  # the numbered list has it as well
+        out = self.run_lines("/sessions", "/sessions 1", "/sessions 2")
+        self.assertRegex(out, rf"1  \*  {new}  \(new session\)")
+        self.assertEqual(self.repl.session.id, third)
 
     def test_cancelling_or_choosing_the_current_session_changes_nothing(self):
         first, second, third = self.three_sessions()
@@ -961,9 +984,13 @@ class ReplTest(unittest.TestCase):
         out = self.run_lines("hi", "/switch")
         self.assertIn("unknown command /switch", out)
 
-    def test_sessions_with_nowhere_to_go(self):
-        self.repl.picker = lambda *a, **k: self.fail("nothing to choose between")
-        self.assertIn("there are no other sessions yet", self.run_lines("hi", "/sessions"))
+    def test_the_list_opens_even_when_the_current_session_is_the_only_one(self):
+        seen = []
+        self.repl.picker = lambda sessions, label, **k: seen.append([label(s)[0] for s in sessions])
+        out = self.run_lines("/sessions", "hi", "/sessions")
+        self.assertEqual(seen, [["(new session)"], ["hi"]])  # before and after it is saved
+        self.assertNotIn("no other sessions", out)
+        self.assertEqual(out.count("stayed in this session"), 2)
 
     def test_model_picker(self):
         seen = {}

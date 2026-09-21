@@ -359,14 +359,16 @@ class Repl:
     def cmd_sessions(self, arg):
         """List sessions and move between them: one command, the way /models works for models."""
         sessions = self.store.list()
+        if not self.session.persisted:          # not in the store until its first message, but
+            sessions.insert(0, self.session)    # it is where you are: the list shows it too
         if arg.isdigit() and len(arg) <= 3:     # a number from the list, not an id prefix
             listed = self.listed or [s.id for s in sessions]
             if not 1 <= int(arg) <= len(listed):
                 return self.error(f"there is no session number {arg}; /sessions lists them")
-            return self._open(self.store.get(listed[int(arg) - 1]))
+            return self._open(listed[int(arg) - 1])
         if arg:
             try:
-                return self._open(self.store.get(arg))
+                return self._open(self.store.get(arg).id)
             except StoreError:
                 pass                            # not an id or a title: use it to filter the list
         if self.picker is None:                 # no terminal to draw on: number them instead
@@ -374,8 +376,6 @@ class Repl:
             self.listed = [s.id for s in shown]
             self.say(render.format_sessions(shown, self.style, self.session.id, numbered=True))
             return self.note("/sessions N opens one of these") if shown else None
-        if not [s for s in sessions if s.id != self.session.id]:
-            return self.note("there are no other sessions yet.")
         ids = [s.id for s in sessions]
         left = []                               # the session we were in, if it gets deleted
 
@@ -399,12 +399,13 @@ class Repl:
         chosen = self.picker(
             sessions, lambda s: render.session_label(s, self.session.id), title="Sessions",
             search=lambda q: self.store.list(search=q), key=lambda s: s.id, query=arg,
-            # Open on the session you are in, as /models opens on the model in use. (A session
-            # with no messages yet isn't in the list.)
+            # Open on the session you are in, as /models opens on the model in use.
             start=ids.index(self.session.id) if self.session.id in ids else 0,
-            current=self.session.id, delete=delete, wording=wording)
+            current=self.session.id, delete=delete, wording=wording,
+            protect=lambda s: None if s.persisted else
+            "this session has no messages yet: there is nothing to delete")
         if chosen is not None:
-            return self._open(self.store.get(chosen.id))
+            return self._open(chosen.id)
         if left:
             self.note(f"deleted the session you were in (“{left[0].title or left[0].id}”).")
             return self.banner()
@@ -412,10 +413,10 @@ class Repl:
 
     cmd_session = cmd_ls = cmd_sessions
 
-    def _open(self, session):
-        if session.id == self.session.id:
+    def _open(self, session_id):
+        if session_id == self.session.id:
             return self.note("you are already in that session.")
-        self._switch(session)
+        self._switch(self.store.get(session_id))
         self.show_tail()
 
     def cmd_rename(self, arg):

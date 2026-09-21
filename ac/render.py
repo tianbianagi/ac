@@ -142,11 +142,16 @@ def _clip(text, width):
     return text if len(text) <= width else text[:width - 1] + "…"
 
 
+def _session_title(session):
+    """A session is only saved with its first message: until then it is "new", not untitled."""
+    return session.title or ("(untitled)" if session.persisted else "(new session)")
+
+
 def session_label(session, current_id=None):
     """(title, details) for one row of the session picker."""
     here = " · current" if session.id == current_id else ""
-    return (" ".join((session.title or "(untitled)").split()),
-            f"{session.id} · {ago(session.updated_at)} · {session.message_count} msgs{here}")
+    return (" ".join(_session_title(session).split()),
+            f"{session.id} · {ago(session.updated_at) or 'new'} · {session.message_count} msgs{here}")
 
 
 def model_label(model, current=None):
@@ -162,7 +167,7 @@ def format_sessions(sessions, style, current_id=None, numbered=False):
         return "no sessions"
     rows = [("", "ID", "TITLE", "MODEL", "SKILLS", "MSGS", "UPDATED")]
     for s in sessions:
-        rows.append(("*" if s.id == current_id else "", s.id, _clip(s.title or "(untitled)", 44),
+        rows.append(("*" if s.id == current_id else "", s.id, _clip(_session_title(s), 44),
                      _clip(s.model, 28), _clip(skills_label(s.skills), 24),
                      str(s.message_count), ago(s.updated_at)))
     if numbered:

@@ -47,7 +47,9 @@ id prefix, exact title, or a number), `/models qwen3.5`. Any other text after `/
 list already filtered by it. In the session list, Ctrl-D (or the forward-delete key) deletes the
 highlighted session after a `y`, and the list stays open so you can clear out several. That
 includes the session you are in: you carry on in a new, empty one on the same model, and are
-told so when you close the list. `/skills` opens the same kind of list, except that several
+told so when you close the list. The session you are in is always in the list, marked `•`: a
+new one with no messages yet is shown first, though it is only saved with its first message.
+`/skills` opens the same kind of list, except that several
 skills can be on at once: Enter attaches the highlighted skill or detaches it, a `•` marks the
 attached ones, and the list stays open until Esc. `/skills NAME` (or a path) attaches one straight
 away and `/skills rm NAME` detaches it. Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
