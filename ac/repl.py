@@ -60,7 +60,8 @@ Conversation
   /help  /quit
 Files: name a path in your message (/abs, ~/home, ./relative, or @name for a bare filename) and
 its contents are sent along: text files, PDFs (report.pdf#10-20 picks pages), images (for
-models with vision) and directory listings.
+models with vision) and directory listings. A * makes it a pattern: src/** sends every file
+under src, docs/**/*.md only the markdown (hidden, ignored and binary files are left out).
 Input: wrap multi-line text in \"\"\" ... \"\"\". Start a message with // to send a leading /.
 Ctrl-C stops a reply (the partial text is kept); Ctrl-D quits."""
 
@@ -211,8 +212,8 @@ class Repl:
         attachments, problems = files.collect(text)
         for problem in problems:
             self.warn(problem)
-        for attachment in attachments:
-            self.note(f"attached {files.describe(attachment)}")
+        for line in files.announce(attachments):
+            self.note(line)
         self.store.add_message(s.id, "user", text, attachments=attachments)
         return self.generate()
 

@@ -64,6 +64,15 @@ attached ~/notes/plan.md (text, 3.1 KB)
 - **Text files** are inlined (the first 256 KB of larger ones, and you're told when that happens).
   **Images** (png, jpg, webp, gif) go to models with vision; other models get a warning instead.
   A **directory** becomes a listing of its entries. Other binary files are refused.
+- **A whole folder**: a path with a `*` in it is a pattern. `src/**` sends every file under
+  `src`, however deep; `docs/**/*.md` only the markdown; `@*.py` the Python files right here.
+  (A folder named *without* a star still sends just a listing of it, so mentioning `~/` in
+  passing can't pull in your home directory.) Left out automatically: hidden files and folders,
+  dependency and build folders (`node_modules`, `__pycache__`, `venv`, ...), anything your
+  `.gitignore` excludes, images, and files that aren't text. It stops at 200 files or 400 KB of
+  text (about 100k tokens; `max_attach_kb` in `config.toml` changes that) and tells you what it
+  left out. What you spell out is taken as meant, so `~/.config/ac/**` works although `.config`
+  is hidden. You get one line back, `attached 14 files from src/** (138 KB)`; `/files` lists them.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
   `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
   (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A
@@ -134,6 +143,9 @@ export_dir = "~/Documents/chats"
 
 # Render replies as markdown in the terminal (default true).
 markdown = true
+
+# How much text a pattern such as src/** may attach to one message, in KB (default 400).
+max_attach_kb = 400
 
 # What exports call the two sides of the conversation (default "User" and "Assistant").
 user_name = "Sam"

@@ -175,7 +175,7 @@ def format_sessions(sessions, style, current_id=None, numbered=False):
 def format_message(msg, style, thinking=False, markdown=False):
     if msg.role == "user":
         lines = [style.bold(style.cyan(">>> ")) + msg.content]
-        lines += [style.dim(f"    attached {files.describe(a)}") for a in msg.attachments]
+        lines += [style.dim(f"    attached {line}") for line in files.summarize(msg.attachments)]
         return "\n".join(lines)
     parts = []
     if thinking and msg.thinking:
@@ -242,7 +242,7 @@ def to_markdown(session, messages, thinking=False):
         # be large, and they are the user's documents rather than something that was said.
         if m.attachments:
             lines.append("")
-            lines += [f"*attached: {files.describe(a)}*  " for a in m.attachments]
+            lines += [f"*attached: {line}*  " for line in files.summarize(m.attachments)]
     return "\n".join(lines) + "\n"
 
 

@@ -268,6 +268,32 @@ class ReplTest(unittest.TestCase):
         stored = self.store.messages(self.repl.session.id)[2]
         self.assertEqual(stored.attachments[0].content, "SECRET FILE BODY")  # still in the session
 
+    def test_a_pattern_attaches_every_file_under_a_folder(self):
+        for name, body in [("src/a.py", "A = 1"), ("src/sub/b.py", "B = 2"), ("src/sub/c.md", "sea"),
+                           ("src/.hidden/d.py", "D = 4"), ("src/x.bin", None)]:
+            path = self.tmp / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"\x00\x01" if body is None else body.encode())
+        out = self.run_lines(f"what do these define? {self.tmp}/src/**", "and again?", "/files")
+        self.assertIn(f"attached 3 files from {self.tmp}/src/** (13 B); /files lists them", out)
+        self.assertIn("left out 1 not text", out)
+        self.assertEqual(out.count("attached "), 1 + 0)  # one line for the lot, not one per file
+        sent = self.fake.requests[0]["messages"][0]["content"]
+        for expected in (f'<file path="{self.tmp}/src/a.py">\nA = 1', "B = 2", "sea"):
+            self.assertIn(expected, sent)
+        self.assertNotIn("D = 4", sent)
+        self.assertEqual(self.fake.requests[1]["messages"][0]["content"], sent)  # stays in context
+        for name in ("a.py", "sub/b.py", "sub/c.md"):
+            self.assertIn(f"{self.tmp}/src/{name} (text", out)  # /files lists each one
+
+        self.out = io.StringIO()
+        for n in range(8):
+            (self.tmp / "src" / f"more{n}.txt").write_text("x")
+        self.run_lines(f"now {self.tmp}/src/**", f"/export md {self.tmp / 'o.md'}")
+        exported = (self.tmp / "o.md").read_text()
+        self.assertRegex(exported, r"\*attached: and \d+ more files \(\d+ B\)\*")
+        self.assertLess(exported.count("*attached:"), 3 + 4 + 1)  # summarised, not 11 lines
+
     def test_resume_shows_what_was_attached(self):
         note = self.tmp / "notes.md"
         note.write_text("hello")

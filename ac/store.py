@@ -115,6 +115,7 @@ class Attachment:
     content: str | None = None
     data: bytes | None = None
     note: str | None = None
+    group: str | None = None    # the pattern that brought it in (src/**); not stored
 
     @property
     def size(self):

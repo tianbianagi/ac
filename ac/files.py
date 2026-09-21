@@ -5,11 +5,14 @@ exists, the client reads it and sends the contents along. Only what the user typ
 a read; skills and model output never can.
 """
 
+import glob
 import os
 import re
+import subprocess
+from collections import Counter, namedtuple
 from pathlib import Path
 
-from . import pdf
+from . import config, pdf
 from .store import Attachment
 
 MAX_TEXT_BYTES = 256 * 1024
@@ -17,6 +20,15 @@ MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_DIRECTORY_ENTRIES = 200
 MAX_ATTACHMENTS = 20
 MAX_PDF_IMAGE_PAGES = 8  # a scanned PDF is sent as page images; each costs ~2k tokens
+MAX_PATTERN_FILES = 200
+MAX_PATTERN_MATCHES = 20_000    # stop expanding a pattern like ~/** instead of walking the disk
+DEFAULT_PATTERN_KB = 400        # roughly 100k tokens; max_attach_kb in config.toml changes it
+JUNK_DIRS = {"node_modules", "__pycache__", "venv", "env", "dist", "build", "target", "vendor",
+             "site-packages"}
+
+# One thing named in a message: a file or directory (path, maybe PDF pages), or a pattern such as
+# src/** together with the files it matched.
+Ref = namedtuple("Ref", ["path", "pages", "matches"], defaults=[None, None])
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 # A double-quoted phrase, a single-quoted phrase, or a bare word that may contain "\ ".
@@ -58,28 +70,77 @@ def _existing(word):
 
 
 def find_refs(text):
-    """Existing files and directories named in a message, as (path, pages) without duplicates.
+    """What a message names, as Refs without duplicates.
 
     A word counts when it looks like a path (starts with / or ~, or contains a /) or is marked
     with a leading @, which is how to name a bare file in the current directory: @notes.md.
     A PDF can carry a page selection, report.pdf#10-20, which comes back as pages "10-20".
+    A word with a * in it is a pattern: src/** is every file under src, docs/**/*.md only the
+    markdown. A directory named without one contributes just a listing of itself.
     """
     found = []
     for word, explicit in _candidates(text):
         if not (explicit or _looks_like_path(word)):
             continue
-        ref = (_existing(word), None)
-        if ref[0] is None and "#" in word:
-            base, _, pages = word.rpartition("#")
-            if base.lower().endswith(".pdf") and _PAGES.fullmatch(pages):
-                ref = (_existing(base), pages)
-        if ref[0] is not None and ref not in found:
+        if "*" in word:
+            matches = expand(word)
+            ref = Ref(word, None, matches) if matches else None
+        else:
+            ref = Ref(_existing(word))
+            if ref.path is None and "#" in word:
+                base, _, pages = word.rpartition("#")
+                if base.lower().endswith(".pdf") and _PAGES.fullmatch(pages):
+                    ref = Ref(_existing(base), pages)
+        if ref is not None and ref.path is not None and ref not in found:
             found.append(ref)
     return found
 
 
 def find_paths(text):
-    return [path for path, _ in find_refs(text)]
+    return [ref.path for ref in find_refs(text) if ref.matches is None]
+
+
+def expand(pattern):
+    """The files a pattern matches, sorted: nothing hidden, no dependency or build folders, and
+    nothing that git would ignore.
+
+    Only what the wildcards matched is judged. The part of the pattern that was spelled out is
+    taken as meant, so ~/.config/ac/** works even though .config is hidden."""
+    pattern = os.path.expanduser(pattern)
+    spelled_out = pattern.split("*", 1)[0]
+    base = spelled_out if spelled_out.endswith(os.sep) else os.path.dirname(spelled_out)
+    matches = []
+    try:
+        for n, match in enumerate(glob.iglob(pattern, recursive=True)):
+            if n >= MAX_PATTERN_MATCHES:
+                break
+            matched = Path(os.path.relpath(match, base or ".")).parts
+            junk = any(part.startswith(".") or part in JUNK_DIRS for part in matched)
+            if not junk and os.path.isfile(match):
+                matches.append(Path(match).resolve())
+    except (OSError, ValueError, re.error):
+        return []
+    return _drop_git_ignored(sorted(set(matches)))
+
+
+def _drop_git_ignored(paths):
+    """Without the files a .gitignore excludes, when they live in a git repository."""
+    if not paths:
+        return paths
+    try:
+        top = subprocess.run(["git", "-C", str(paths[0].parent), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10)
+        if top.returncode != 0:
+            return paths
+        root = Path(top.stdout.strip()).resolve()
+        inside = [p for p in paths if p.is_relative_to(root)]
+        listed = "\0".join(str(p.relative_to(root)) for p in inside)
+        ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-z", "--stdin"],
+                                 input=listed, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return paths
+    dropped = {root / name for name in ignored.stdout.split("\0") if name}
+    return [p for p in paths if p not in dropped]
 
 
 def _size(n):
@@ -201,20 +262,84 @@ def read_all(path, pages=None):
     return [read(path)], []
 
 
+def read_pattern(pattern, paths, already=()):
+    """Attachments for the files a pattern matched, within a budget, plus what was left out."""
+    budget = int(config.settings().get("max_attach_kb", DEFAULT_PATTERN_KB)) * 1024
+    attachments, skipped, used = [], Counter(), 0
+    taken = {a.path for a in already}
+    for n, path in enumerate(paths):
+        if str(path) in taken:
+            continue
+        if len(attachments) >= MAX_PATTERN_FILES or used >= budget:
+            left = len(paths) - n
+            limit = (f"{MAX_PATTERN_FILES} files" if len(attachments) >= MAX_PATTERN_FILES
+                     else _size(budget))
+            skipped[f"past the {limit} limit (a narrower pattern, such as **/*.py, fits more "
+                    f"of what matters)"] += left
+            break
+        if path.suffix.lower() in IMAGE_SUFFIXES:
+            skipped["images (name one directly to send it)"] += 1
+            continue
+        try:
+            got, _ = read_all(path)
+        except FileError:
+            skipped["not text"] += 1
+            continue
+        got = [a for a in got if a.kind == "text"]      # a scanned PDF would come as page images
+        if not got:
+            skipped["scanned PDFs"] += 1
+            continue
+        if used + got[0].size > budget and attachments:
+            skipped[f"past the {_size(budget)} limit (a narrower pattern, such as **/*.py, fits "
+                    f"more of what matters)"] += len(paths) - n
+            break
+        got[0].group = pattern
+        attachments.append(got[0])
+        used += got[0].size
+    notes = [f"{pattern}: left out {count} {reason}" for reason, count in skipped.items()]
+    return attachments, notes
+
+
 def collect(text):
-    """Attachments for every path named in a message, plus lines the user should see."""
+    """Attachments for everything named in a message, plus lines the user should see."""
     attachments, problems = [], []
     refs = find_refs(text)
     if len(refs) > MAX_ATTACHMENTS:
         problems.append(f"only the first {MAX_ATTACHMENTS} of {len(refs)} paths were attached")
-    for path, pages in refs[:MAX_ATTACHMENTS]:
+    for ref in refs[:MAX_ATTACHMENTS]:
         try:
-            got, notes = read_all(path, pages)
+            if ref.matches is not None:
+                got, notes = read_pattern(ref.path, ref.matches, attachments)
+            else:
+                got, notes = read_all(ref.path, ref.pages)
             attachments += got
             problems += notes
         except FileError as e:
             problems.append(str(e))
     return attachments, problems
+
+
+def announce(attachments):
+    """Lines telling the user what was attached: one per file, or one per pattern."""
+    lines, groups = [], {}
+    for a in attachments:
+        if a.group:
+            groups.setdefault(a.group, []).append(a)
+        else:
+            lines.append(f"attached {describe(a)}")
+    for pattern, items in groups.items():
+        lines.append(f"attached {len(items)} files from {pattern} "
+                     f"({_size(sum(a.size for a in items))}); /files lists them")
+    return lines
+
+
+def summarize(attachments, limit=5):
+    """describe() for each attachment, or for the first few when a pattern brought in many."""
+    if len(attachments) <= limit:
+        return [describe(a) for a in attachments]
+    rest = attachments[limit - 2:]
+    return [describe(a) for a in attachments[:limit - 2]] + [
+        f"and {len(rest)} more files ({_size(sum(a.size for a in rest))})"]
 
 
 def display_path(path):
