@@ -39,16 +39,17 @@ def _clip(text, width):
 
 class Picker:
     def __init__(self, items, label, *, title="", search=None, key=None, height=10, query="",
-                 start=0, delete=None, protect=None):
+                 start=0, current=None, delete=None, protect=None):
         """label(item) -> (text, detail). search(query) -> items found some other way (say,
         by message text), matched to `items` by key(item). query pre-fills the filter; start
-        is the row the cursor begins on.
+        is the row the cursor begins on. current is the key of the item in use now: its row
+        keeps a • when the cursor is elsewhere.
 
         delete(item) makes rows deletable (Ctrl-D, then y to confirm). protect(item) returns
         the reason an item may not be deleted, or None."""
         self.items, self.label, self.title = list(items), label, title
         self.search, self.key, self.height = search, key or id, height
-        self.delete, self.protect = delete, protect
+        self.current, self.delete, self.protect = current, delete, protect
         self.confirming = None      # the item whose deletion is waiting for a "y"
         self.message = ""           # one line about what the last key did
         self.query, self.index, self.top = query, 0, 0
@@ -133,17 +134,19 @@ class Picker:
         elif self.message:
             head = f"{DIM}{_clip(self.message, width)}{RESET}"
         lines = [head, _clip(f"› {self.query}", width)]
-        shown = []
+        shown, marks = [], []
         for item in self.matches[self.top:self.top + self.height]:
             text, detail = self.label(item)
             shown.append((text, detail + " · matched in messages" * (self.key(item) in self.deep)))
+            marks.append("•" if self.current is not None and self.key(item) == self.current else " ")
         # One detail column for all rows, so titles and details each line up.
         room = max(width - 4 - min(max((len(d) for _, d in shown), default=0), width // 2), 10)
         for n, (text, detail) in enumerate(shown, self.top):
             chosen = n == self.index
             row = _clip(text, room)
             pad = " " * max(room - sum(_char_width(c) for c in row), 0)
-            lines.append(f"{BOLD_CYAN if chosen else ''}{'❯' if chosen else ' '} {row}{RESET}"
+            mark = marks[n - self.top]
+            lines.append(f"{BOLD_CYAN if chosen else ''}{'❯' if chosen else mark} {row}{RESET}"
                          f"{pad}  {DIM}{_clip(detail, width - 2 - room)}{RESET}")
         if not self.matches:
             lines.append(f"{DIM}  nothing matches{RESET}")
@@ -180,13 +183,13 @@ def _read_key(fd, decoder):
     return decoder.decode(byte) or None                 # None until a multi-byte character is whole
 
 
-def pick(items, label, *, title="", search=None, key=None, query="", start=0, delete=None,
-         protect=None, out=None, fd=None):
+def pick(items, label, *, title="", search=None, key=None, query="", start=0, current=None,
+         delete=None, protect=None, out=None, fd=None):
     """Let the user choose one of items. Returns it, or None if they cancelled."""
     out = out or sys.stdout
     fd = sys.stdin.fileno() if fd is None else fd
     picker = Picker(items, label, title=title, search=search, key=key, query=query, start=start,
-                    delete=delete, protect=protect)
+                    current=current, delete=delete, protect=protect)
     decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
     saved = termios.tcgetattr(fd)
     drawn, result = 0, "cancel"

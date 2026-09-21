@@ -365,8 +365,10 @@ class Repl:
         chosen = self.picker(
             sessions, lambda s: render.session_label(s, self.session.id), title="Sessions",
             search=lambda q: self.store.list(search=q), key=lambda s: s.id, query=arg,
-            start=next(i for i, sid in enumerate(ids) if sid != self.session.id),
-            delete=lambda s: self.store.delete(s.id), protect=protect)
+            # Open on the session you are in, as /models opens on the model in use. (A session
+            # with no messages yet isn't in the list.)
+            start=ids.index(self.session.id) if self.session.id in ids else 0,
+            current=self.session.id, delete=lambda s: self.store.delete(s.id), protect=protect)
         if chosen is None:
             return self.note("stayed in this session.")
         self._open(self.store.get(chosen.id))
@@ -523,7 +525,7 @@ class Repl:
         else:
             chosen = self.picker(
                 models, lambda m: render.model_label(m, self.session.model), title="Models",
-                key=lambda m: m["name"],
+                key=lambda m: m["name"], current=self.session.model,
                 start=names.index(self.session.model) if self.session.model in names else 0)
             if chosen is None:
                 return self.note(f"still using {self.session.model}.")

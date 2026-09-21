@@ -174,6 +174,18 @@ class PickerTest(unittest.TestCase):
         self.keys(*"lis")
         self.assertIn("(2 of 4)", self.plain(60)[0])
 
+    def test_the_current_item_keeps_a_mark_when_the_cursor_moves_away(self):
+        picker = Picker(self.items, label, key=lambda s: s.id, current="id02", start=1)
+        rows = [ANSI.sub("", line)[:2] for line in picker.lines(70)[2:]]
+        self.assertEqual(rows, ["  ", "❯ ", "  ", "  "])  # under the cursor, the cursor shows
+        picker.handle("down")
+        rows = [ANSI.sub("", line)[:2] for line in picker.lines(70)[2:]]
+        self.assertEqual(rows, ["  ", "• ", "❯ ", "  "])
+        for ch in "lisbon":  # filtered out of view: no mark on anything else
+            picker.handle(ch)
+        self.assertNotIn("•", "".join(picker.lines(70)[2:]))
+        self.assertNotIn("•", "".join(self.picker.lines(70)))  # and none where nothing is current
+
     def test_rows_never_wrap(self):
         wide = [session(n, "とても長い日本語のタイトル " * 6 + "and a long English tail " * 4)
                 for n in range(3)]

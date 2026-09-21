@@ -474,7 +474,7 @@ class ReplTest(unittest.TestCase):
         out = self.run_lines("/sessions")
         self.assertEqual(seen["ids"], [third, second, first])  # everything, most recent first
         self.assertEqual((seen["title"], seen["query"]), ("Sessions", ""))
-        self.assertEqual(seen["start"], 1)  # the cursor starts on the most recent *other* session
+        self.assertEqual((seen["start"], seen["current"]), (0, third))  # opens on where you are
         self.assertEqual(seen["labels"][0][0], "third chat")
         self.assertIn(" · current", seen["labels"][0][1])
         self.assertNotIn("current", seen["labels"][1][1])
@@ -499,6 +499,15 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(self.store.messages(second), [])  # its messages went with it
         self.assertEqual(self.repl.session.id, third)
         self.assertIn("stayed in this session", out)
+
+    def test_the_picker_opens_on_the_current_session_wherever_it_is_in_the_list(self):
+        first, second, third = self.three_sessions()
+        seen = {}
+        self.repl.picker = lambda sessions, label, **options: seen.update(options)
+        self.run_lines(f"/sessions {first}", "/sessions")  # now in the oldest: last in the list
+        self.assertEqual((seen["start"], seen["current"]), (2, first))
+        self.run_lines("/new", "/sessions")  # a session with no messages yet isn't listed
+        self.assertEqual(seen["start"], 0)
 
     def test_cancelling_or_choosing_the_current_session_changes_nothing(self):
         first, second, third = self.three_sessions()
@@ -552,7 +561,7 @@ class ReplTest(unittest.TestCase):
 
         self.repl.picker = picker
         out = self.run_lines("/models")
-        self.assertEqual((seen["title"], seen["start"]), ("Models", 0))  # cursor on the current one
+        self.assertEqual((seen["title"], seen["start"], seen["current"]), ("Models", 0, "m1"))
         self.assertEqual(seen["labels"], [("m1", "0.0 GB · 1B · Q4 · current"),
                                           ("m2:latest", "0.0 GB · 1B · Q4")])
         self.assertIn("model set to m2:latest", out)
