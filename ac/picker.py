@@ -40,20 +40,26 @@ def _clip(text, width):
 class Picker:
     def __init__(self, items, label, *, title="", search=None, key=None, height=10, query="",
                  start=0, current=None, delete=None, protect=None, wording=None,
-                 delete_label="delete"):
+                 delete_label="delete", toggle=None, toggle_label="toggles", marked=None):
         """label(item) -> (text, detail). search(query) -> items found some other way (say,
         by message text), matched to `items` by key(item). query pre-fills the filter; start
         is the row the cursor begins on. current is the key of the item in use now: its row
-        keeps a • when the cursor is elsewhere.
+        carries a •, in a column of its own so that it shows under the cursor too.
 
         delete(item) makes rows deletable (Ctrl-D, then y to confirm). protect(item) returns
         the reason an item may not be deleted, or None. wording(item) returns (question, done)
         to use instead of "Delete ...?" and "deleted ...", for lists where deleting a row does
-        not destroy the thing it names; delete_label is the word for it in the key hints."""
+        not destroy the thing it names; delete_label is the word for it in the key hints.
+
+        toggle(item) makes this a list of things to switch on and off rather than a choice of
+        one: Enter calls it and the list stays open, until Esc. It returns a line saying what
+        it did; toggle_label says what Enter does in the key hints. marked(item) then decides
+        which rows carry the •, since several can be on at once."""
         self.items, self.label, self.title = list(items), label, title
         self.search, self.key, self.height = search, key or id, height
         self.current, self.delete, self.protect = current, delete, protect
         self.wording, self.delete_label = wording, delete_label
+        self.toggle, self.toggle_label, self.marked = toggle, toggle_label, marked
         self.confirming = None      # the item whose deletion is waiting for a "y"
         self.message = ""           # one line about what the last key did
         self.query, self.index, self.top = query, 0, 0
@@ -97,6 +103,9 @@ class Picker:
                 self.confirming = self.selected
             return None
         if key == "enter":
+            if self.toggle and self.matches:
+                self.message = self.toggle(self.selected) or ""
+                return None
             return "accept" if self.matches else None
         if key == "esc":
             return "cancel"
@@ -128,10 +137,15 @@ class Picker:
         self.message = done
         return None
 
+    def _marked(self, item):
+        if self.marked is not None:
+            return self.marked(item)
+        return self.current is not None and self.key(item) == self.current
+
     def lines(self, width):
         width = max(width - 1, 20)
         count = f"{len(self.matches)} of {len(self.items)}" if self.query else f"{len(self.items)}"
-        keys = ("type to filter · ↑↓ · Enter"
+        keys = ("type to filter · ↑↓ · Enter" + f" {self.toggle_label}" * bool(self.toggle)
                 + f" · Ctrl-D {self.delete_label}" * bool(self.delete) + " · Esc")
         head = f"{DIM}{_clip(f'{self.title} ({count}) · {keys}', width)}{RESET}"
         if self.confirming is not None:
@@ -146,19 +160,21 @@ class Picker:
         for item in self.matches[self.top:self.top + self.height]:
             text, detail = self.label(item)
             shown.append((text, detail + " · matched in messages" * (self.key(item) in self.deep)))
-            marks.append("•" if self.current is not None and self.key(item) == self.current else " ")
+            marks.append("•" if self._marked(item) else " ")
         # One detail column for all rows, so titles and details each line up. A row is
-        # "M " + title (room) + "  " + detail (wide): it must never exceed width, because a row
-        # that wraps throws off the repaint, which counts lines.
+        # "❯ " + "• " (in lists that mark rows) + title (room) + "  " + detail (wide): it must
+        # never exceed width, because a row that wraps throws off the repaint, which counts lines.
+        marking = self.current is not None or self.marked is not None
+        fixed = 6 if marking else 4
         widest = max((sum(_char_width(c) for c in d) for _, d in shown), default=0)
-        room = max(width - 4 - min(widest, width // 2), 10)
-        wide = max(width - 4 - room, 0)
+        room = max(width - fixed - min(widest, width // 2), 10)
+        wide = max(width - fixed - room, 0)
         for n, (text, detail) in enumerate(shown, self.top):
             chosen = n == self.index
             row = _clip(text, room)
             pad = " " * max(room - sum(_char_width(c) for c in row), 0)
-            mark = marks[n - self.top]
-            lines.append(f"{BOLD_CYAN if chosen else ''}{'❯' if chosen else mark} {row}{RESET}"
+            mark = f"{marks[n - self.top]} " * marking
+            lines.append(f"{BOLD_CYAN if chosen else ''}{'❯' if chosen else ' '} {mark}{row}{RESET}"
                          f"{pad}  {DIM}{_clip(detail, wide)}{RESET}")
         if not self.matches:
             lines.append(f"{DIM}  nothing matches{RESET}")
@@ -195,14 +211,12 @@ def _read_key(fd, decoder):
     return decoder.decode(byte) or None                 # None until a multi-byte character is whole
 
 
-def pick(items, label, *, title="", search=None, key=None, query="", start=0, current=None,
-         delete=None, protect=None, wording=None, delete_label="delete", out=None, fd=None):
-    """Let the user choose one of items. Returns it, or None if they cancelled."""
+def pick(items, label, *, out=None, fd=None, **options):
+    """Let the user choose one of items. Returns it, or None if they cancelled. The options
+    are Picker's."""
     out = out or sys.stdout
     fd = sys.stdin.fileno() if fd is None else fd
-    picker = Picker(items, label, title=title, search=search, key=key, query=query, start=start,
-                    current=current, delete=delete, protect=protect, wording=wording,
-                    delete_label=delete_label)
+    picker = Picker(items, label, **options)
     decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
     saved = termios.tcgetattr(fd)
     drawn, result = 0, "cancel"

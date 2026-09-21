@@ -134,7 +134,7 @@ class ReplTest(unittest.TestCase):
 
     def test_every_alias_is_listed_in_help_and_nowhere_else(self):
         aliases = {n[4:] for n in dir(Repl) if n.startswith("cmd_")} - set(Repl.command_names())
-        self.assertEqual(aliases, {"file", "session", "model", "ls", "rm", "q", "exit"})
+        self.assertEqual(aliases, {"file", "session", "model", "skill", "ls", "rm", "q", "exit"})
         shown = self.run_lines("/help")
         line = next(l + shown.split(l)[1].split("\n")[1] for l in shown.split("\n")
                     if l.startswith("Shorter names"))
@@ -184,6 +184,90 @@ class ReplTest(unittest.TestCase):
         self.assertIn("skill 'temp' can't be loaded; continuing without it", out)
         self.assertEqual(self.fake.requests[-1]["messages"][0]["role"], "user")
         self.assertEqual(self.repl.session.skills, ["temp"])  # stays attached
+
+    def pick_skills(self, act, line="/skills"):
+        """Run /skills with a stand-in picker: act(rows, options) plays the user."""
+        seen = {}
+
+        def picker(rows, label, **options):
+            seen.update(options)
+            return act(rows, dict(options, label=label))
+
+        self.repl.picker = picker
+        return self.run_lines(line), seen
+
+    def test_skills_opens_a_list_to_attach_and_detach_from(self):
+        write_skill(self.tmp / "skills", "haiku", description="Poetry mode")
+        write_skill(self.tmp / "skills", "terse", description="Few words")
+        self.run_lines("hi")
+        said = []
+
+        def act(rows, options):
+            labels = lambda: [options["label"](r) for r in rows]
+            said.append(labels())
+            said.append(options["toggle"](rows[0]))
+            said.append(options["toggle"](rows[1]))
+            said.append(options["toggle"](rows[0]))
+            said.append(([options["marked"](r) for r in rows], labels()))
+
+        out, seen = self.pick_skills(act)
+        self.assertEqual((seen["title"], seen["toggle_label"]), ("Skills", "attaches or detaches"))
+        self.assertEqual(said[0], [("haiku", "Poetry mode"), ("terse", "Few words")])
+        self.assertEqual(said[1:4], ["attached haiku", "attached terse", "detached haiku"])
+        self.assertEqual(said[4], ([False, True], [("haiku", "Poetry mode"),
+                                                   ("terse", "attached · Few words")]))
+        self.assertIn("attached: terse", out)
+        self.assertEqual(self.store.get(self.repl.session.id).skills, ["terse"])  # saved
+        out, _ = self.pick_skills(lambda rows, options: None)
+        self.assertIn("nothing changed · attached: terse", out)
+
+    def test_skills_lists_what_is_attached_from_elsewhere_or_gone(self):
+        write_skill(self.tmp / "skills", "haiku")
+        gone = write_skill(self.tmp / "skills", "temp")
+        style = self.tmp / "notes" / "style.md"
+        style.parent.mkdir()
+        style.write_text("---\ndescription: House style\n---\nBe plain.")
+        self.repl.picker = None
+        self.run_lines(f"/skills {style}", "/skills temp")  # a name or a path attaches it
+        self.assertEqual(self.repl.session.skills, [str(style), "temp"])
+        gone.unlink()
+        said = []
+
+        def act(rows, options):
+            said.append([options["label"](r) for r in rows])
+            said.append(options["toggle"](rows[2]))  # detaching what can't be loaded works...
+            said.append(options["toggle"](rows[2]))  # ...attaching it again can't
+            said.append(options["toggle"](rows[1]))
+            said.append(options["toggle"](rows[1]))  # a path can be put back: its row stays
+
+        self.pick_skills(act)
+        self.assertEqual(said[0], [("haiku", "A skill"),
+                                   ("style", f"attached · {style} · House style"),
+                                   ("temp", "attached · can't be loaded")])
+        self.assertEqual(said[1], "detached temp")
+        self.assertIn("no skill named 'temp'", said[2])
+        self.assertEqual(said[3:], ["detached style", "attached style"])
+        self.assertEqual(self.repl.session.skills, [str(style)])
+
+    def test_skills_with_other_text_filters_the_list(self):
+        write_skill(self.tmp / "skills", "haiku", description="Poetry mode")
+        out, seen = self.pick_skills(lambda rows, options: None, "/skills poet")
+        self.assertEqual(seen["query"], "poet")
+        self.assertNotIn("error", out)
+        self.repl.picker = None  # with no list to filter, it can only be a wrong name
+        self.assertIn("no skill named 'poet' (available: haiku)", self.run_lines("/skills poet"))
+        self.assertEqual(self.repl.session.skills, [])
+
+    def test_skills_without_a_terminal_prints_the_list(self):
+        self.repl.picker = lambda *a, **k: self.fail("there is nothing to list")
+        self.assertIn("no skills found. Create", self.run_lines("/skills"))
+        write_skill(self.tmp / "skills", "haiku", description="Poetry mode")
+        write_skill(self.tmp / "skills", "terse", description="Few words")
+        self.repl.picker = None
+        out = self.run_lines("/skills add terse nope", "/skills terse", "/skills")
+        self.assertIn("no skill named 'nope'", out)  # all or nothing
+        self.assertRegex(out, r"\n  haiku +Poetry mode\n\* terse +Few words\n")
+        self.assertIn("/skills rm NAME detaches it", out)
 
     # -- files ------------------------------------------------------------
 
@@ -1075,10 +1159,12 @@ class ReplTest(unittest.TestCase):
     def test_completions(self):
         write_skill(self.tmp / "skills", "haiku")
         self.repl.session.skills = ["haiku"]
-        self.assertEqual(self.repl.completions("/sk"), ["/skill", "/skills"])
-        self.assertEqual(self.repl.completions("/skill "), ["add", "rm"])
-        self.assertEqual(self.repl.completions("/skill add h"), ["haiku"])
-        self.assertEqual(self.repl.completions("/skill rm "), ["haiku"])
+        write_skill(self.tmp / "skills", "terse")
+        self.assertEqual(self.repl.completions("/sk"), ["/skills"])
+        self.assertEqual(self.repl.completions("/skills "), ["add", "rm", "haiku", "terse"])
+        self.assertEqual(self.repl.completions("/skills add h"), ["haiku"])
+        self.assertEqual(self.repl.completions("/skills rm "), ["haiku"])  # only what is attached
+        self.assertEqual(self.repl.completions("/skill t"), ["terse"])  # the alias completes too
         self.assertEqual(self.repl.completions("/models m2"), ["m2:latest"])
         self.assertEqual(self.repl.completions("/model m2"), ["m2:latest"])  # the alias completes too
         self.assertEqual(self.repl.completions("/mo"), ["/models"])  # but only one name is offered
@@ -1090,7 +1176,7 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(self.repl.completions(f"summarize {self.tmp}/no"), [f"{self.tmp}/notes.md"])
         self.assertEqual(self.repl.completions(f"{self.tmp}/no"), [f"{self.tmp}/notes.md"])
         self.assertEqual(self.repl.completions(f"/skill add {self.tmp}/sk"), [f"{self.tmp}/skills/"])
-        self.assertEqual(self.repl.completions("/sk"), ["/skill", "/skills"])  # commands still win
+        self.assertEqual(self.repl.completions("/sk"), ["/skills"])  # commands still win
 
 
 if __name__ == "__main__":

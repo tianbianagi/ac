@@ -42,9 +42,10 @@ Sessions
                           folder (export_dir in config.toml), else the current folder.
                           The model names the session first, unless you already have.
 Skills and prompt
-  /skills                 list available skills (* = attached)
-  /skill add NAME|PATH    attach a skill to this session
-  /skill rm NAME          detach a skill
+  /skills                 pick skills from a list, the same way: Enter attaches the
+                          highlighted skill to this session, or detaches it; Esc closes
+  /skills NAME|PATH       ...or attach one straight away; any other text filters the list
+  /skills rm NAME         detach a skill
   /system [TEXT|clear]    show, set or clear this session's own system text
   /context                show token usage and the exact system prompt being sent
   /files                  browse the files in this conversation, what is queued, and your
@@ -67,8 +68,8 @@ Conversation
   /undo                   drop the last exchange
   /compact                continue in a new session seeded with a summary of this one
   /help  /quit
-Shorter names also work: /file /session /model (singulars), /ls (= /sessions), /rm (= /delete),
-/q or /exit (= /quit).
+Shorter names also work: /file /session /model /skill (singulars), /ls (= /sessions),
+/rm (= /delete), /q or /exit (= /quit).
 Files: name a path in your message (/abs, ~/home, ./relative, or @name for a bare filename) and
 its contents are sent along: text files, PDFs (report.pdf#10-20 picks pages), images (for
 models with vision) and directory listings. A * makes it a pattern: src/** sends every file
@@ -474,35 +475,85 @@ class Repl:
     # -- commands: skills and prompt --------------------------------------
 
     def cmd_skills(self, arg):
+        """Everything about skills in one place, the way /files works: on its own it lists, and
+        in the list Enter attaches or detaches; with a name or a path it attaches that one."""
+        action, _, rest = arg.partition(" ")
+        if action in ("add", "rm", "remove"):
+            refs = shlex.split(rest)
+            if not refs:
+                return self.error("usage: /skills add NAME|PATH ...  |  /skills rm NAME ...")
+            return self._attach(refs) if action == "add" else self._detach(refs)
+        if arg:
+            try:
+                return self._attach(shlex.split(arg))
+            except skills.SkillError:
+                if self.picker is None:
+                    raise                       # not a skill: use it to filter the list
+
+        Row = namedtuple("Row", "ref title detail")
         found = skills.discover()
-        if not found:
+        rows = [Row(name, name, skill.description) for name, skill in sorted(found.items())]
+        for ref in self.session.skills:         # attached by path, or gone from the folders
+            if ref not in found:
+                try:
+                    skill = skills.resolve(ref)
+                    where = [files.display_path(skill.path), skill.description]
+                    rows.append(Row(ref, skill.name, " · ".join(filter(None, where))))
+                except skills.SkillError:
+                    rows.append(Row(ref, skills.label(ref), "can't be loaded"))
+        if not rows:
             where = config.skills_dirs()[-1]
             return self.note(f"no skills found. Create {where}/<name>/SKILL.md")
-        attached = {skills.label(r) for r in self.session.skills}
-        for name, skill in sorted(found.items()):
-            mark = "*" if name in attached else " "
-            self.say(f"{mark} {name:<20} {self.style.dim(skill.description)}")
 
-    def cmd_skill(self, arg):
-        action, _, names = arg.partition(" ")
-        refs = shlex.split(names)
-        if action == "" or action == "list":
-            return self.note(f"attached: {render.skills_label(self.session.skills)}")
-        if action not in ("add", "rm", "remove") or not refs:
-            return self.error("usage: /skill add NAME|PATH ...  |  /skill rm NAME ...")
-        for ref in refs:
-            if action == "add":
-                stored = skills.normalize_ref(ref)
-                if stored in self.session.skills:
-                    self.note(f"'{skills.label(stored)}' is already attached")
-                    continue
-                self.session.skills.append(stored)
+        def attached(row):
+            return row.ref in self.session.skills
+
+        if self.picker is None:                 # no terminal to draw on: mark them instead
+            for row in rows:
+                self.say(f"{'*' if attached(row) else ' '} {row.title:<20} "
+                         f"{self.style.dim(row.detail)}")
+            return self.note("* = attached · /skills NAME|PATH attaches one, /skills rm NAME "
+                             "detaches it")
+
+        def toggle(row):
+            if attached(row):
+                self.session.skills.remove(row.ref)
             else:
-                matches = [r for r in self.session.skills if ref in (r, skills.label(r))]
-                if not matches:
-                    self.error(f"'{ref}' is not attached")
-                    continue
+                try:
+                    skills.resolve(row.ref)
+                except skills.SkillError as e:
+                    return str(e)
+                self.session.skills.append(row.ref)
+            self._changed()
+            return f"{'attached' if attached(row) else 'detached'} {row.title}"
+
+        before = list(self.session.skills)
+        self.picker(rows, lambda r: (r.title, " · ".join(filter(None, ["attached" * attached(r),
+                                                                        r.detail]))),
+                    title="Skills", key=lambda r: r.ref, query=arg, toggle=toggle,
+                    toggle_label="attaches or detaches", marked=attached)
+        label = render.skills_label(self.session.skills)
+        self.note(f"attached: {label}" if self.session.skills != before
+                  else f"nothing changed · attached: {label}")
+
+    cmd_skill = cmd_skills
+
+    def _attach(self, refs):
+        for stored in [skills.normalize_ref(ref) for ref in refs]:  # all or nothing
+            if stored in self.session.skills:
+                self.note(f"'{skills.label(stored)}' is already attached")
+            else:
+                self.session.skills.append(stored)
+        self._changed()
+        self.note(f"attached: {render.skills_label(self.session.skills)}")
+
+    def _detach(self, refs):
+        for ref in refs:
+            matches = [r for r in self.session.skills if ref in (r, skills.label(r))]
+            if matches:
                 self.session.skills.remove(matches[0])
+            else:
+                self.error(f"'{ref}' is not attached")
         self._changed()
         self.note(f"attached: {render.skills_label(self.session.skills)}")
 
@@ -811,12 +862,10 @@ class Repl:
             return []
         command, prefix = words[0][1:], words[-1]
         try:
-            if command == "skill" and len(words) == 2:
-                options = ["add", "rm"]
-            elif command == "skill" and words[1] == "add":
-                options = list(skills.discover())
-            elif command == "skill":
+            if command in ("skills", "skill") and words[1] in ("rm", "remove") and len(words) > 2:
                 options = [skills.label(r) for r in self.session.skills]
+            elif command in ("skills", "skill"):
+                options = ["add", "rm"] * (len(words) == 2) + list(skills.discover())
             elif command in ("sessions", "session", "ls", "delete", "rm") and len(words) == 2:
                 options = [x.id for x in self.store.list()]
             elif command in ("models", "model") and len(words) == 2:

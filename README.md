@@ -38,7 +38,7 @@ acc skills [NAME]            acc models
 ```
 
 Inside a chat, `/help` lists the commands: session management (`/new /sessions /rename
-/title /fork /delete /export`), skills (`/skills`, `/skill add|rm`), prompt (`/system`, `/context`, `/files`),
+/title /fork /delete /export`), skills (`/skills`), prompt (`/system`, `/context`, `/files`),
 model (`/models`, `/set`, `/think`), display (`/markdown`), and conversation editing (`/retry /edit /undo /compact`).
 `/sessions` and `/models` work the same way. On their own they open a list to pick from: typing
 narrows it (for sessions, by title, id or anything said in the conversation), the arrow keys move,
@@ -47,7 +47,10 @@ id prefix, exact title, or a number), `/models qwen3.5`. Any other text after `/
 list already filtered by it. In the session list, Ctrl-D (or the forward-delete key) deletes the
 highlighted session after a `y`, and the list stays open so you can clear out several. That
 includes the session you are in: you carry on in a new, empty one on the same model, and are
-told so when you close the list. Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
+told so when you close the list. `/skills` opens the same kind of list, except that several
+skills can be on at once: Enter attaches the highlighted skill or detaches it, a `•` marks the
+attached ones, and the list stays open until Esc. `/skills NAME` (or a path) attaches one straight
+away and `/skills rm NAME` detaches it. Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
 
 ## Files
 
@@ -117,7 +120,8 @@ Answer in as few words as the question allows. ...
 ```
 
 Put skills in `~/.config/ac/skills/<name>/SKILL.md` (see `examples/skills/`), or add directories
-with `AC_SKILLS_PATH`. Attach by name, or by path to any markdown file: `/skill add ./notes/style.md`.
+with `AC_SKILLS_PATH`. Attach from the `/skills` list, by name, or by path to any markdown file:
+`/skills ./notes/style.md`.
 
 - Skills are **instructions only**. Nothing is executed and the model gets no tools.
 - The system prompt is rebuilt on every turn from the session's own system text plus its attached

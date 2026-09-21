@@ -153,6 +153,33 @@ class PickerTest(unittest.TestCase):
         self.assertEqual(self.picker.handle("ctrl-d"), "cancel")  # Ctrl-D just closes it, as before
         self.assertEqual(len(self.picker.items), 4)
 
+    def test_a_toggle_list_stays_open_and_marks_what_is_on(self):
+        on = {"id02"}
+
+        def toggle(s):
+            on.symmetric_difference_update({s.id})
+            return f"{'on' if s.id in on else 'off'}: {s.title}"
+
+        self.picker = Picker(self.items, label, title="Skills", key=lambda s: s.id,
+                             toggle=toggle, toggle_label="attaches or detaches",
+                             marked=lambda s: s.id in on)
+        self.assertIn("Enter attaches or detaches · Esc", self.plain(90)[0])
+        self.assertEqual([line[:3] for line in self.plain()[2:]], ["❯  ", "  •", "   ", "   "])
+        self.assertIsNone(self.keys("enter", "down", "down"))  # Enter acts, and the list stays
+        self.assertEqual(on, {"id01", "id02"})
+        # The cursor and the mark each have a column: a row can be both highlighted and on.
+        self.assertEqual([line[:3] for line in self.plain()[2:]], ["  •", "  •", "❯  ", "   "])
+        self.keys("up")
+        self.assertEqual([line[:3] for line in self.plain()[2:]], ["  •", "❯ •", "   ", "   "])
+        self.keys("down")
+        self.assertIsNone(self.keys("up", "enter"))
+        self.assertEqual(self.plain()[0], "off: Rye bread recipe")  # says what Enter just did
+        self.assertEqual(on, {"id01"})
+        self.keys(*"zzz")
+        self.assertIsNone(self.keys("enter"))  # nothing highlighted: nothing to toggle
+        self.assertEqual(on, {"id01"})
+        self.assertEqual(self.keys("esc"), "cancel")
+
     def test_nothing_matches(self):
         self.keys(*"zzz")
         self.assertIsNone(self.picker.selected)
@@ -186,13 +213,13 @@ class PickerTest(unittest.TestCase):
         self.keys(*"lis")
         self.assertIn("(2 of 4)", self.plain(60)[0])
 
-    def test_the_current_item_keeps_a_mark_when_the_cursor_moves_away(self):
+    def test_the_current_item_keeps_its_mark_wherever_the_cursor_is(self):
         picker = Picker(self.items, label, key=lambda s: s.id, current="id02", start=1)
-        rows = [ANSI.sub("", line)[:2] for line in picker.lines(70)[2:]]
-        self.assertEqual(rows, ["  ", "❯ ", "  ", "  "])  # under the cursor, the cursor shows
+        rows = [ANSI.sub("", line)[:4] for line in picker.lines(70)[2:]]
+        self.assertEqual(rows, ["    ", "❯ • ", "    ", "    "])  # under the cursor too
         picker.handle("down")
-        rows = [ANSI.sub("", line)[:2] for line in picker.lines(70)[2:]]
-        self.assertEqual(rows, ["  ", "• ", "❯ ", "  "])
+        rows = [ANSI.sub("", line)[:4] for line in picker.lines(70)[2:]]
+        self.assertEqual(rows, ["    ", "  • ", "❯   ", "    "])
         for ch in "lisbon":  # filtered out of view: no mark on anything else
             picker.handle(ch)
         self.assertNotIn("•", "".join(picker.lines(70)[2:]))
@@ -205,7 +232,8 @@ class PickerTest(unittest.TestCase):
                 session(3, "日本語のとても長いファイル名" * 4)]
         details = {"id01": long_detail, "id02": "queued · text, 3 KB · ~/x", "id03": long_detail * 2}
         picker = Picker(rows, lambda s: (s.title, details[s.id]), key=lambda s: s.id,
-                        delete=lambda s: None, title="Files", delete_label="remove")
+                        delete=lambda s: None, title="Files", delete_label="remove",
+                        current="id02")  # with the extra column that marks take
         for width in (24, 40, 57, 80, 114, 200):
             for state in ("list", "confirm", "message", "filter"):
                 if state == "confirm":
