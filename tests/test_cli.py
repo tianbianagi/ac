@@ -32,6 +32,7 @@ class CliTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_MODEL", None)
+        os.environ.pop("AC_EXPORT_DIR", None)
 
     def ac(self, *argv, stdin=""):
         out, err = io.StringIO(), io.StringIO()
@@ -161,6 +162,10 @@ class CliTest(unittest.TestCase):
         target = self.tmp / "rye.md"
         self.ac("export", rye.id, "-o", str(target))
         self.assertIn("# Rye bread", target.read_text())
+        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "vault")}):
+            _, out, err = self.ac("export", rye.id, "--save")
+        (saved,) = (self.tmp / "vault").glob(f"????-??-?? ac-{rye.id}.md")
+        self.assertEqual((out, err), ("", f"wrote {saved}\n"))
 
         code, _, err = self.ac("rm", rye.id)
         self.assertEqual(code, 1)

@@ -4,8 +4,9 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
-from . import files, skills
+from . import config, files, skills
 
 
 def use_color(stream):
@@ -156,6 +157,20 @@ def format_message(msg, style, thinking=False):
     if msg.status != "complete":
         parts.append(style.dim(f"[{msg.status}]"))
     return "\n".join(p for p in parts if p)
+
+
+def export_path(session, fmt):
+    """Default file for an export: "<date the session began> ac-<id>.<fmt>" in the export folder.
+
+    The session's own date, not today's, so exporting again updates the same file.
+    """
+    day = datetime.fromisoformat(session.created_at).astimezone().date().isoformat()
+    return (config.export_dir() or Path.cwd()) / f"{day} ac-{session.id}.{fmt}"
+
+
+def write_export(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def to_markdown(session, messages, thinking=False):

@@ -3,6 +3,8 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -76,6 +78,7 @@ class ReplTest(unittest.TestCase):
                                            "XDG_CONFIG_HOME": str(self.tmp / "config")})
         env.start()
         self.addCleanup(env.stop)
+        os.environ.pop("AC_EXPORT_DIR", None)
         self.store = Store(":memory:")
         self.addCleanup(self.store.close)
         self.out = io.StringIO()
@@ -432,18 +435,60 @@ class ReplTest(unittest.TestCase):
         out = self.run_lines("hi", f"/export md {target}",
                              f"/export json {self.tmp / 'out.json'}")
         self.assertIn(f"wrote {target}", out)  # the full path, so the file can be found
-        cwd = os.getcwd()
-        os.chdir(self.tmp)
-        self.addCleanup(os.chdir, cwd)
-        out = self.run_lines("/export")
-        default = self.tmp / f"ac-{self.repl.session.id}.md"
-        self.assertTrue(default.is_file())
-        self.assertIn(f"wrote {default}", out)  # default name lands in the current folder
         text = target.read_text()
         self.assertIn("## User\n\nhi", text)
         self.assertIn("## Assistant\n\nHello!", text)
         data = json.loads((self.tmp / "out.json").read_text())
         self.assertEqual([m["content"] for m in data["messages"]], ["hi", "Hello!"])
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        out = self.run_lines("/export")
+        day = datetime.now().date().isoformat()  # the session began today, local time
+        default = self.tmp / f"{day} ac-{self.repl.session.id}.md"
+        self.assertTrue(default.is_file())
+        self.assertIn(f"wrote {default}", out)  # no export folder set: the current folder
+
+    def test_export_folder_from_config_and_environment(self):
+        vault = self.tmp / "my vault" / "acc sessions"  # spaces, and it doesn't exist yet
+        (self.tmp / "config" / "ac").mkdir(parents=True)
+        (self.tmp / "config" / "ac" / "config.toml").write_text(f'export_dir = "{vault}"\n')
+        self.fake.reply("Hello!")
+        out = self.run_lines("hi", "/export", "/export json")
+        name = f"{datetime.now().date().isoformat()} ac-{self.repl.session.id}"
+        self.assertIn(f"wrote {vault / name}.md", out)
+        self.assertIn("## Assistant\n\nHello!", (vault / f"{name}.md").read_text())
+        self.assertTrue((vault / f"{name}.json").is_file())
+
+        self.run_lines("more", "/export")  # same session, same file: updated, not duplicated
+        self.assertEqual(len(list(vault.glob("*.md"))), 1)
+        self.assertIn("more", (vault / f"{name}.md").read_text())
+
+        explicit = self.tmp / "elsewhere.md"
+        self.run_lines(f"/export md {explicit}")  # a named file is used as given
+        self.assertTrue(explicit.is_file())
+
+        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "from-env")}):
+            self.run_lines("/export")
+        self.assertTrue((self.tmp / "from-env" / f"{name}.md").is_file())
+
+    def test_export_problems_are_reported_not_fatal(self):
+        (self.tmp / "config" / "ac").mkdir(parents=True)
+        (self.tmp / "config" / "ac" / "config.toml").write_text("export_dir = [broken\n")
+        blocker = self.tmp / "a-file"
+        blocker.write_text("")
+        err = io.StringIO()
+        with redirect_stderr(err), mock.patch.dict(os.environ, {"AC_EXPORT_DIR": ""}):
+            out = self.run_lines("hi", f"/export md {blocker}/x.md", "still alive")
+        self.assertIn(f"error: can't write {blocker}/x.md: ", out)
+        self.assertEqual(len(self.fake.requests), 2)
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, cwd)
+        with redirect_stderr(err):
+            self.run_lines("/export")  # broken config: warned about, then ignored
+        self.assertIn("ignoring", err.getvalue())
+        self.assertEqual(len(list(self.tmp.glob("* ac-*.md"))), 1)
 
     def test_completions(self):
         write_skill(self.tmp / "skills", "haiku")

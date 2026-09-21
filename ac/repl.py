@@ -34,7 +34,8 @@ Sessions
   /rename TITLE           rename this session
   /fork [SEQ]             branch this session (up to message SEQ) and switch to the copy
   /delete [ID]            delete this (or another) session
-  /export [md|json] [FILE]  write the transcript (default: ./ac-ID.md in the current folder)
+  /export [md|json] [FILE]  write the transcript; by default "DATE ac-ID.md" in your export
+                          folder (export_dir in config.toml), else the current folder
 Skills and prompt
   /skills                 list available skills (* = attached)
   /skill add NAME|PATH    attach a skill to this session
@@ -373,12 +374,15 @@ class Repl:
             return
         parts = shlex.split(arg)
         fmt = parts.pop(0) if parts and parts[0] in ("md", "json") else "md"
-        path = Path(parts[0]).expanduser() if parts else Path(f"ac-{self.session.id}.{fmt}")
         session = self.store.get(self.session.id)
+        path = Path(parts[0]).expanduser() if parts else render.export_path(session, fmt)
         messages = self.store.messages(session.id)
         text = (render.to_json(session, messages) if fmt == "json"
                 else render.to_markdown(session, messages))
-        path.write_text(text, encoding="utf-8")
+        try:
+            render.write_export(path, text)
+        except OSError as e:
+            return self.error(f"can't write {files.display_path(path)}: {e.strerror or e}")
         self.note(f"wrote {files.display_path(path)}")
 
     # -- commands: skills and prompt --------------------------------------

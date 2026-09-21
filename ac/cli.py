@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import __version__, config, files, render, skills
 from .ollama import Client, OllamaError, resolve_model
@@ -148,10 +149,14 @@ def cmd_export(args):
     messages = store.messages(session.id)
     text = (render.to_json(session, messages) if args.format == "json"
             else render.to_markdown(session, messages, thinking=args.thinking))
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(text)
-        print(f"wrote {files.display_path(args.output)}", file=sys.stderr)
+    if args.output or args.save:
+        path = Path(args.output).expanduser() if args.output else render.export_path(
+            session, args.format)
+        try:
+            render.write_export(path, text)
+        except OSError as e:
+            raise StoreError(f"can't write {files.display_path(path)}: {e.strerror or e}") from None
+        print(f"wrote {files.display_path(path)}", file=sys.stderr)
     else:
         sys.stdout.write(text)
 
@@ -294,6 +299,8 @@ def build_parser():
     p.add_argument("--format", choices=["md", "json"], default="md")
     p.add_argument("--thinking", action="store_true", help="include reasoning (markdown)")
     p.add_argument("-o", "--output", metavar="FILE")
+    p.add_argument("--save", action="store_true",
+                   help='write "DATE ac-ID.md" into the export folder instead of printing')
 
     p = add("ask", cmd_ask, "one-shot question; `-` or piped stdin supplies the prompt")
     session_setup(p)

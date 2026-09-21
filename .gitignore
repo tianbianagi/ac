@@ -4,5 +4,5 @@ __pycache__/
 build/
 dist/
 .venv/
-ac-*.md
-ac-*.json
+* ac-*.md
+* ac-*.json

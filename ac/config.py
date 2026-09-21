@@ -1,6 +1,8 @@
 """Paths, environment variables and defaults."""
 
 import os
+import sys
+import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,6 +29,31 @@ def skills_dirs():
     dirs = [Path(p).expanduser() for p in extra.split(os.pathsep) if p]
     dirs.append(_xdg("XDG_CONFIG_HOME", ".config") / "skills")
     return dirs
+
+
+def config_path():
+    return _xdg("XDG_CONFIG_HOME", ".config") / "config.toml"
+
+
+def settings():
+    """Personal settings from config.toml. No file means no settings."""
+    try:
+        with open(config_path(), "rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"{COMMAND}: ignoring {config_path()}: {e}", file=sys.stderr)
+        return {}
+
+
+def export_dir():
+    """Where exports go when no file is named: $AC_EXPORT_DIR, then export_dir in config.toml.
+
+    None means the current directory.
+    """
+    raw = os.environ.get("AC_EXPORT_DIR") or settings().get("export_dir")
+    return Path(str(raw)).expanduser() if raw else None
 
 
 def history_path():

@@ -27,7 +27,7 @@ acc ls [--search QUERY]      # full-text search over titles and messages
 acc show ID                  acc rename ID TITLE
 acc fork ID [--at SEQ]       acc rm ID... [-y]
 acc set ID [-m MODEL] [--system TEXT] [--think on|off] [-o temperature=0.2] [--add-skill NAME]
-acc export ID [--format md|json] [-o FILE]
+acc export ID [--format md|json] [-o FILE | --save]   # prints unless told where to write
 
 acc ask "question"           # one-shot; prints only the answer
 git diff | acc ask "review this:" -        # `-` marks where piped stdin goes
@@ -110,10 +110,23 @@ with `AC_SKILLS_PATH`. Attach by name, or by path to any markdown file: `/skill 
 
 ## Configuration
 
+Personal settings live in `~/.config/ac/config.toml` (optional):
+
+```toml
+# Where /export and `acc export --save` write when no filename is given.
+export_dir = "~/Documents/chats"
+```
+
+Exports are named `DATE ac-ID.md`, for example `2026-09-20 ac-efc6c96d.md`. The date is the day
+the session began, so exporting a session again updates its file rather than adding another.
+Without an `export_dir` they go to the current folder. A filename given to `/export` or `-o` is
+used exactly as written.
+
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
+| `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |
 | `AC_DEBUG=1` | print each request payload to stderr | |
