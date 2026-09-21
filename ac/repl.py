@@ -104,6 +104,9 @@ class Repl:
         self.log = log or self.out  # notes, warnings and errors; stderr for one-shot use
         self.input_fn, self.editor, self.quiet = input_fn, editor, quiet
         self.style = style or render.Style(render.use_color(self.log))
+        self.markdown = config.markdown()  # only takes effect where the output is a terminal
+        self.picker = None          # picker.pick, when there is a real terminal to run it on
+        self.listed = []            # ids as last numbered by /sessions, for /sessions N
         self.last_usage = None  # (tokens used, context length) after the latest reply
 
     # -- output -----------------------------------------------------------
@@ -132,7 +135,7 @@ class Repl:
         if len(messages) > count:
             self.note(f"… {len(messages) - count} earlier messages")
         for m in messages[-count:]:
-            self.say(render.format_message(m, self.style))
+            self.say(render.format_message(m, self.style, markdown=self.markdown))
             self.say()
 
     # -- input ------------------------------------------------------------
@@ -215,7 +218,9 @@ class Repl:
             mode = "silent"
         else:
             mode = "show" if s.options.get("show_thinking", True) else "hide"
-        renderer = render.StreamRenderer(self.out, self.style, mode)
+        renderer = render.StreamRenderer(
+            self.out, self.style, mode,
+            markdown=self.markdown and render.use_color(self.out))
         options = {k: v for k, v in s.options.items() if k not in RESERVED_OPTIONS}
         content, thinking, stats, status, error = [], [], {}, "complete", None
         stream = self.client.chat(s.model, payload, think=s.options.get("think"),
@@ -512,6 +517,13 @@ class Repl:
             self.note(f"{key} = {json.dumps(value)}")
         self._changed()
 
+    def cmd_markdown(self, arg):
+        if arg not in ("on", "off"):
+            return self.error("usage: /markdown on|off")
+        self.markdown = arg == "on"
+        self.note("replies are rendered for the terminal" if self.markdown
+                  else "replies are shown as the model wrote them")
+
     def cmd_think(self, arg):
         changes = {"on": ("think", True), "off": ("think", False), "default": ("think", None),
                    "show": ("show_thinking", True), "hide": ("show_thinking", False)}
@@ -605,14 +617,16 @@ class Repl:
                 options = list(skills.discover())
             elif command == "skill":
                 options = [skills.label(r) for r in self.session.skills]
-            elif command in ("switch", "delete", "rm") and len(words) == 2:
+            elif command in ("sessions", "session", "ls", "delete", "rm") and len(words) == 2:
                 options = [x.id for x in self.store.list()]
-            elif command == "model" and len(words) == 2:
+            elif command in ("models", "model") and len(words) == 2:
                 options = [m["name"] for m in self.client.list_models()]
             elif command == "set" and len(words) == 2:
                 options = list(KNOWN_OPTIONS)
             elif command == "think" and len(words) == 2:
                 options = ["on", "off", "default", "show", "hide"]
+            elif command == "markdown" and len(words) == 2:
+                options = ["on", "off"]
             else:
                 options = []
         except (OllamaError, StoreError):

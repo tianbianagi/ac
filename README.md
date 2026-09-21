@@ -36,10 +36,16 @@ acc ask --no-save "..."      # don't keep it as a session
 acc skills [NAME]            acc models
 ```
 
-Inside a chat, `/help` lists the commands: session management (`/new /sessions /switch /rename
+Inside a chat, `/help` lists the commands: session management (`/new /sessions /rename
 /title /fork /delete /export`), skills (`/skills`, `/skill add|rm`), prompt (`/system`, `/context`, `/files`),
-model (`/model`, `/set`, `/think`), and conversation editing (`/retry /edit /undo /compact`).
-Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
+model (`/models`, `/set`, `/think`), display (`/markdown`), and conversation editing (`/retry /edit /undo /compact`).
+`/sessions` and `/models` work the same way. On their own they open a list to pick from: typing
+narrows it (for sessions, by title, id or anything said in the conversation), the arrow keys move,
+Enter chooses and Esc cancels. With an argument they go straight there: `/sessions 3e05` (an id,
+id prefix, exact title, or a number), `/models qwen3.5`. Any other text after `/sessions` opens the
+list already filtered by it. In the session list, Ctrl-D (or the forward-delete key) deletes the
+highlighted session after a `y`, and the list stays open so you can clear out several; the session
+you are in is protected there (`/delete` handles that one). Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
 
 ## Files
 
@@ -97,10 +103,18 @@ with `AC_SKILLS_PATH`. Attach by name, or by path to any markdown file: `/skill 
   after each reply shows tokens used against the model's real context window, and warns at 80% and
   95%. `/compact` continues in a *new* session seeded with a summary; the original is untouched.
   Set a window explicitly with `/set num_ctx 32768`.
-- **Switching models.** `/model` lists installed models; `/model NAME` (a unique prefix is enough)
-  or `/model NUMBER` switches mid-chat. The whole conversation carries over to the new model, the
+- **Switching models.** `/models` lets you pick from the installed models; `/models NAME` (a
+  unique prefix is enough) or `/models NUMBER` switches mid-chat. The whole conversation carries over to the new model, the
   choice is saved with the session, and every reply records which model wrote it (`acc export
   --format json`). If the new model isn't in memory, you're told how much Ollama has to load first.
+- **Markdown** in replies is rendered for the terminal as it streams: headings, bold, italics,
+  inline code, links, lists with hanging indents, quotes, tables, and word-wrapping to the window.
+  Code blocks are printed exactly as written, never wrapped, so they copy out cleanly. Text is
+  held back only until it can be read correctly: a bold or code span appears when it closes,
+  and one that never closes (`*args, **kwargs`, `__init__`) is printed literally. This happens
+  only on a terminal: piped or redirected output, exports and the stored transcript are always
+  the model's own markdown. `/markdown off` shows replies raw; `markdown = false` in
+  `config.toml` or `AC_MARKDOWN=0` makes that the default.
 - **Thinking** is shown dimmed (`/think hide` collapses it), stored for `acc show --thinking`, and
   never sent back to the model.
 - **Failures.** If a reply fails, your message is kept and `/retry` resends it. An interrupted
@@ -115,6 +129,9 @@ Personal settings live in `~/.config/ac/config.toml` (optional):
 ```toml
 # Where /export and `acc export --save` write when no filename is given.
 export_dir = "~/Documents/chats"
+
+# Render replies as markdown in the terminal (default true).
+markdown = true
 ```
 
 Exports are named `DATE TITLE.md`, for example `2026-09-20 Planning a Trip to Lisbon.md`. The
@@ -133,6 +150,7 @@ are dropped, and if another session already owns the name, the session id is app
 | --- | --- | --- |
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
+| `AC_MARKDOWN` | `0` shows replies as raw markdown; overrides `markdown` in `config.toml` | rendered |
 | `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |

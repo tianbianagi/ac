@@ -71,7 +71,8 @@ def cmd_show(args):
                     f"skills: {render.skills_label(session.skills)}"))
     for m in store.messages(session.id):
         print()
-        print(render.format_message(m, style, thinking=args.thinking))
+        print(render.format_message(m, style, thinking=args.thinking,
+                                    markdown=config.markdown()))
 
 
 def cmd_rename(args):

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, files, skills
+from .markdown import MarkdownStream
+from .markdown import render as render_markdown
 
 
 def use_color(stream):
@@ -46,10 +48,13 @@ class StreamRenderer:
     """Prints one streamed reply: dimmed thinking first, then the content.
 
     thinking: "show" prints the reasoning, "hide" prints only a marker, "silent" prints nothing.
+    markdown: render the content for a terminal. Only ever on when styling is, so that piped
+    and redirected output stays exactly what the model wrote.
     """
 
-    def __init__(self, out, style, thinking="show"):
+    def __init__(self, out, style, thinking="show", markdown=False):
         self.out, self.style, self.thinking = out, style, thinking
+        self.markdown = MarkdownStream(out) if markdown and style.enabled else None
         self.state = None
         self.last = "\n"
 
@@ -74,7 +79,10 @@ class StreamRenderer:
                     self._write("\n")
                 self.state = "content"
                 text = text.lstrip()
-            self._write(text)
+            if self.markdown:
+                self.markdown.feed(text)
+            else:
+                self._write(text)
         self.out.flush()
 
     def _end_thinking(self):
@@ -85,6 +93,8 @@ class StreamRenderer:
     def finish(self):
         if self.state == "thinking":
             self._end_thinking()
+        elif self.state == "content" and self.markdown:
+            self.markdown.finish()
         elif self.state == "content" and self.last != "\n":
             self._write("\n")
         self.out.flush()
@@ -132,7 +142,22 @@ def _clip(text, width):
     return text if len(text) <= width else text[:width - 1] + "…"
 
 
-def format_sessions(sessions, style, current_id=None):
+def session_label(session, current_id=None):
+    """(title, details) for one row of the session picker."""
+    here = " · current" if session.id == current_id else ""
+    return (" ".join((session.title or "(untitled)").split()),
+            f"{session.id} · {ago(session.updated_at)} · {session.message_count} msgs{here}")
+
+
+def model_label(model, current=None):
+    """(name, details) for one row of the model picker."""
+    details = model.get("details") or {}
+    parts = [f"{model.get('size', 0) / 1e9:.1f} GB", details.get("parameter_size"),
+             details.get("quantization_level"), "current" if model["name"] == current else None]
+    return model["name"], " · ".join(p for p in parts if p)
+
+
+def format_sessions(sessions, style, current_id=None, numbered=False):
     if not sessions:
         return "no sessions"
     rows = [("", "ID", "TITLE", "MODEL", "SKILLS", "MSGS", "UPDATED")]
@@ -140,12 +165,14 @@ def format_sessions(sessions, style, current_id=None):
         rows.append(("*" if s.id == current_id else "", s.id, _clip(s.title or "(untitled)", 44),
                      _clip(s.model, 28), _clip(skills_label(s.skills), 24),
                      str(s.message_count), ago(s.updated_at)))
+    if numbered:
+        rows = [("#",) + rows[0]] + [(str(n),) + row for n, row in enumerate(rows[1:], 1)]
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     lines = ["  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip() for row in rows]
     return "\n".join([style.dim(lines[0])] + lines[1:])
 
 
-def format_message(msg, style, thinking=False):
+def format_message(msg, style, thinking=False, markdown=False):
     if msg.role == "user":
         lines = [style.bold(style.cyan(">>> ")) + msg.content]
         lines += [style.dim(f"    attached {files.describe(a)}") for a in msg.attachments]
@@ -153,7 +180,7 @@ def format_message(msg, style, thinking=False):
     parts = []
     if thinking and msg.thinking:
         parts.append(style.dim(msg.thinking.strip()))
-    parts.append(msg.content)
+    parts.append(render_markdown(msg.content) if markdown and style.enabled else msg.content)
     if msg.status != "complete":
         parts.append(style.dim(f"[{msg.status}]"))
     return "\n".join(p for p in parts if p)

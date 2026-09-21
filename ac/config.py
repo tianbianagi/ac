@@ -56,6 +56,14 @@ def export_dir():
     return Path(str(raw)).expanduser() if raw else None
 
 
+def markdown():
+    """Whether replies are rendered as markdown: $AC_MARKDOWN, then markdown in config.toml."""
+    env = os.environ.get("AC_MARKDOWN")
+    if env is not None:
+        return env.lower() not in ("0", "false", "no", "off", "")
+    return bool(settings().get("markdown", True))
+
+
 def history_path():
     return _xdg("XDG_STATE_HOME", ".local/state") / "history"
 

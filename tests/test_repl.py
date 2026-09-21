@@ -310,6 +310,39 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(replies, ["m1", "m2:latest"])  # each reply records who wrote it
         self.assertEqual(self.store.get(self.repl.session.id).model, "m1")
 
+    def test_markdown_is_rendered_only_on_a_terminal(self):
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+
+        reply = "Use **bold** and `code`:\n\n- one\n- two\n"
+        with mock.patch.dict(os.environ, {"TERM": "xterm-256color"}):
+            os.environ.pop("NO_COLOR", None)
+            self.out = Terminal()
+            self.repl = Repl(self.store, Client(self.fake.host), self.store.draft("m1"),
+                             out=self.out, input_fn=self.next_input)
+            for _ in range(3):
+                self.fake.reply(reply)
+            shown = self.run_lines("hi")
+            self.assertIn("\033[1mbold\033[0m", shown)
+            self.assertIn("• one", shown)
+            self.assertNotIn("**", shown)
+
+            self.out.truncate(0)
+            shown = self.run_lines("/markdown off", "again")
+            self.assertIn("Use **bold** and `code`:", shown)
+
+            with mock.patch.dict(os.environ, {"AC_MARKDOWN": "0"}):
+                off = Repl(self.store, Client(self.fake.host), self.store.draft("m1"),
+                           out=Terminal(), input_fn=self.next_input)
+                self.assertFalse(off.markdown)
+        # whatever was shown, what is stored is what the model wrote
+        self.assertEqual(self.store.messages(self.repl.session.id)[1].content, reply)
+
+    def test_piped_output_is_never_rendered(self):
+        self.fake.reply("Use **bold**")
+        self.assertIn("Use **bold**", self.run_lines("hi"))  # self.out is not a terminal
+
     def test_bad_model(self):
         out = self.run_lines("/model zzz")
         self.assertIn("model 'zzz' is not installed", out)
