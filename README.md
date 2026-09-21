@@ -73,6 +73,7 @@ attached ~/notes/plan.md (text, 3.1 KB)
 - The file is **snapshotted when you send the message** and stays in the conversation from then
   on, so later turns can refer to it and the history always matches what the model really saw.
   Name the path again to send its current contents. `/files` lists what a conversation holds.
+  Exports name the files that were attached but never include their contents.
 - This is not a tool the model can call. Only a path that *you type* is ever read: nothing in a
   skill or in the model's output can make `acc` open a file.
 - It works in one-shots too: `acc ask "review ./diff.patch"`.

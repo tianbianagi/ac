@@ -254,11 +254,19 @@ class ReplTest(unittest.TestCase):
                          (f"read {note} please", "beta"))  # editing re-reads the file
 
         self.run_lines(f"/export md {self.tmp / 'o.md'}", f"/export json {self.tmp / 'o.json'}")
-        self.assertIn(f"<details><summary>attached: {note} (text, 4 B)</summary>",
-                      (self.tmp / "o.md").read_text())
-        exported = json.loads((self.tmp / "o.json").read_text())["messages"][0]["attachments"]
-        self.assertEqual(exported, [{"path": str(note), "kind": "text", "bytes": 4, "note": None,
-                                     "content": "beta"}])
+        note.write_text("SECRET FILE BODY")
+        self.run_lines(f"and now read {note}", f"/export md {self.tmp / 'o.md'}",
+                       f"/export json {self.tmp / 'o.json'}")
+        markdown, exported = (self.tmp / "o.md").read_text(), (self.tmp / "o.json").read_text()
+        # Exports name the files that were attached, and never reproduce what was in them.
+        self.assertIn(f"*attached: {note} (text, 16 B)*", markdown)
+        self.assertEqual(json.loads(exported)["messages"][2]["attachments"],
+                         [{"path": str(note), "kind": "text", "bytes": 16, "note": None}])
+        for text in (markdown, exported):
+            self.assertNotIn("SECRET FILE BODY", text)
+            self.assertNotIn("beta", text)
+        stored = self.store.messages(self.repl.session.id)[2]
+        self.assertEqual(stored.attachments[0].content, "SECRET FILE BODY")  # still in the session
 
     def test_resume_shows_what_was_attached(self):
         note = self.tmp / "notes.md"
