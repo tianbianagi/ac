@@ -311,9 +311,10 @@ class ReplTest(unittest.TestCase):
         (folder / "visit.md").write_text("visit on sunday")
         (folder / "recipe.md").write_text("plum cake")
         (folder / "photo.png").write_bytes(b"\x89PNG")
+        (self.tmp / "plan.txt").write_text("the plan")
         return folder
 
-    def test_attach_takes_the_rest_of_the_line_as_the_path(self):
+    def test_files_takes_a_path_with_spaces_unquoted(self):
         folder = self.vault()
         out = self.run_lines(f"/files {folder}/*.md", "what is planned?")
         self.assertIn(f"queued 2 files from {folder}/*.md (24 B)", out)
@@ -326,87 +327,113 @@ class ReplTest(unittest.TestCase):
         self.run_lines("and then?")
         self.assertEqual(len(self.store.messages(self.repl.session.id)[2].attachments), 0)  # once
 
-    def test_attach_accepts_quoted_and_escaped_paths_and_single_files(self):
+    def test_several_paths_in_one_command(self):
         folder = self.vault()
-        escaped = str(folder / "visit.md").replace(" ", "\\ ")
-        out = self.run_lines(f'/files "{folder}/recipe.md"', f"/files {escaped}", "/files",
-                             f"/files {folder}/visit.md")
-        self.assertIn(f"queued {folder}/recipe.md (text, 9 B)", out)
-        self.assertIn(f"queued {folder}/visit.md (text, 15 B)", out)
-        self.assertIn("it goes with your next message", out)
-        self.assertIn("that is already queued", out)
-        self.assertEqual([Path(a.path).name for a in self.repl.queued], ["recipe.md", "visit.md"])
+        escaped = str(folder / "recipe.md").replace(" ", "\\ ")
+        # unquoted with spaces, a plain path, an escaped one and a quoted one, all at once
+        out = self.run_lines(f'/files {folder}/visit.md {self.tmp}/plan.txt {escaped} '
+                             f'"{folder}/photo.png"')
+        self.assertEqual([Path(a.path).name for a in self.repl.queued],
+                         ["visit.md", "plan.txt", "recipe.md", "photo.png"])
+        self.assertIn("they go with your next message", out)
+        self.assertEqual(self.store.resources(), {})  # no @NAME, no name
 
-    def test_a_named_path_can_be_used_as_at_name_in_any_session(self):
+    def test_one_bad_path_queues_nothing(self):
         folder = self.vault()
-        out = self.run_lines(f"/files {folder}/*.md Mom", "/files clear")
-        self.assertIn(f"@mom now means {folder}/*.md", out)
-        self.assertIn("queued 2 files from @mom (24 B)", out)
-        self.assertEqual(self.store.resources(), {"mom": f"{folder}/*.md"})
+        out = self.run_lines(f"/files {folder}/visit.md /no/such/file.md {self.tmp}/plan.txt @trip")
+        self.assertIn("error: nothing matches /no/such/file.md", out)
+        self.assertIn("usage: /files PATH... [@NAME]   (nothing was queued)", out)
+        self.assertEqual((self.repl.queued, self.store.resources()), ([], {}))
+
+    def test_a_last_argument_with_an_at_names_the_paths(self):
+        folder = self.vault()
+        out = self.run_lines(f"/files {folder}/*.md {self.tmp}/plan.txt @Trip")
+        self.assertIn(f"@trip now means {folder}/*.md, {self.tmp}/plan.txt (3 files right now)", out)
+        self.assertIn("write @trip in a message to attach them, or /files @trip to queue them", out)
+        self.assertEqual(self.repl.queued, [])  # naming is only naming
+        self.assertNotIn("queued", out)
+        self.assertEqual(self.store.resources(), {"trip": [f"{folder}/*.md", f"{self.tmp}/plan.txt"]})
 
         (folder / "new.md").write_text("added later")
-        out = self.run_lines("/new", "what does @mom say? and @Mom again")
-        self.assertIn("attached 3 files from @mom", out)  # read afresh, in another session, once
-        self.assertIn("added later", self.fake.requests[-1]["messages"][0]["content"])
+        out = self.run_lines("/new", "what does @trip say? and @Trip again")
+        self.assertIn("attached 4 files from @trip", out)  # read afresh, in another session, once
+        sent = self.fake.requests[-1]["messages"][0]["content"]
+        for expected in ("added later", "the plan", "plum cake"):
+            self.assertIn(expected, sent)
         self.assertEqual(self.store.messages(self.repl.session.id)[0].content,
-                         "what does @mom say? and @Mom again")  # stored as typed
+                         "what does @trip say? and @Trip again")  # stored as typed
 
-        out = self.run_lines("/files mom", "/files @mom", "/files")
-        self.assertIn("queued 3 files from @mom", out)
+        out = self.run_lines("/files @trip", "/files trip", "/files")
+        self.assertIn("queued 4 files from @trip", out)
         self.assertIn("that is already queued", out)
-        self.assertRegex(out, r"@mom\s+" + str(folder).replace("/", "\\/"))
+        self.assertRegex(out, r"  @trip\s+" + str(folder) + r"/\*\.md\n\s+" + str(self.tmp) + "/plan.txt")
 
-    def test_every_natural_way_of_adding_a_name(self):
+    def test_defining_a_name_does_not_send_its_files_with_an_unrelated_message(self):
         folder = self.vault()
-        pattern = f"{folder}/*.md"
-        escaped = pattern.replace(" ", "\\ ")
-        forms = {"a": f'"{pattern}" a', "d": f"{pattern} d", "e": f"{escaped} e",
-                 "f": f"'{pattern}' @F"}
-        for name, typed in forms.items():
-            out = self.run_lines(f"/files {typed}", "/files clear")
-            self.assertIn(f"@{name} now means {pattern}", out, typed)
-        self.assertEqual(self.store.resources(), {name: pattern for name in forms})
+        self.run_lines(f"/files {folder}/*.md @mom", "what is the capital of France?")
+        self.assertEqual(self.fake.requests[0]["messages"],
+                         [{"role": "user", "content": "what is the capital of France?"}])
+        self.run_lines("and what did @mom plan?")  # only when you ask for them
+        self.assertIn("visit on sunday", self.fake.requests[1]["messages"][-1]["content"])
 
-    def test_a_path_is_found_whole_before_a_name_is_looked_for(self):
+    def test_only_an_at_makes_a_name(self):
         folder = self.vault()
-        tricky = folder / "my draft"               # a real file whose last word could be a name
-        tricky.write_text("tricky")
-        out = self.run_lines(f"/files {tricky}")
-        self.assertIn(f"queued {tricky} (text, 6 B)", out)
+        os.chdir(self.tmp)
+        self.addCleanup(os.chdir, Path(__file__).parent)
+        out = self.run_lines(f"/files {folder}/visit.md plan.txt")  # a last word is just a path
+        self.assertEqual([Path(a.path).name for a in self.repl.queued], ["visit.md", "plan.txt"])
         self.assertEqual(self.store.resources(), {})
-        out = self.run_lines(f"/files {folder}/nope.md x", f"/files {folder}/visit.md bad/name")
-        self.assertIn(f"error: nothing matches {folder}/nope.md x. To name a path: "
-                      "/files PATH NAME", out)
-        self.assertIn("error: nothing matches", self.run_lines(f"/files {folder}/*.md as mom"))
-        self.assertIn("error: 'bad/name' can't be a name", out)  # the path was fine; say what wasn't
-        self.assertEqual(self.store.resources(), {})
+        out = self.run_lines("/files clear", f"/files {folder}/visit.md summarize")
+        self.assertIn("error: nothing matches summarize", out)  # not silently made a name
+        self.assertEqual((self.repl.queued, self.store.resources()), ([], {}))
+
+    def test_an_at_that_is_not_last_is_an_existing_name(self):
+        folder = self.vault()
+        self.run_lines(f"/files {folder}/*.md @mom", "/files clear",
+                       f"/files @mom {self.tmp}/plan.txt @all", "/files clear")
+        self.assertEqual(self.store.resources()["all"], [f"{folder}/*.md", f"{self.tmp}/plan.txt"])
+        self.run_lines(f"/files {self.tmp}/plan.txt @mom", "/files clear")  # naming again moves it
+        self.assertEqual(self.store.resources()["mom"], [f"{self.tmp}/plan.txt"])
+        self.assertEqual(self.store.resources()["all"][0], f"{folder}/*.md")  # @all kept its paths
 
     def test_a_name_beats_a_file_of_the_same_name_and_single_files_can_be_named(self):
         folder = self.vault()
         os.chdir(self.tmp)
         self.addCleanup(os.chdir, Path(__file__).parent)
         (self.tmp / "plan").write_text("a file called plan")
-        self.run_lines(f"/files {folder}/visit.md plan", "/files clear", "read @plan")
+        out = self.run_lines(f"/files {folder}/visit.md @plan", "/files @plan", "/files clear",
+                             "read @plan")
+        self.assertIn("(1 file right now)", out)
+        self.assertIn(f"queued {folder}/visit.md (text, 15 B)", out)  # one file: no "1 files from"
         sent = self.fake.requests[-1]["messages"][0]["content"]
         self.assertIn("visit on sunday", sent)
         self.assertNotIn("a file called plan", sent)
 
-    def test_attach_problems(self):
+    def test_files_problems(self):
         folder = self.vault()
-        out = self.run_lines("/files /no/such/thing", f"/files {folder}/*.md bad name",
-                             f"/files {folder}/*.md clear", f"/files {folder}/photo.png pic",
-                             "/files forget nothing", f"/files {folder}/*.md mom")
+        out = self.run_lines("/files /no/such/thing", f"/files {folder}/*.md @bad/name",
+                             f"/files {folder}/*.md @clear", f"/files {folder}/photo.png @pic",
+                             "/files forget nothing", f"/files {folder}/*.md @mom", "/files @nobody")
         self.assertIn("error: nothing matches /no/such/thing", out)
-        self.assertIn(f"error: nothing matches {folder}/*.md bad name", out)  # "…/*.md bad" isn't there
+        self.assertIn("'bad/name' can't be a name", out)
         self.assertIn("'clear' can't be a name", out)
         self.assertIn("there is no @nothing", out)
-        self.assertIn("m1 can't see images", self.run_lines("look"))  # named image: sent as one
+        self.assertIn("error: nothing matches @nobody", out)
+        self.assertIn("m1 can't see images", self.run_lines("look at @pic"))  # named image: sent as one
 
         shutil.rmtree(folder)
         out = self.run_lines("what about @mom ?", "/files mom")
-        self.assertEqual(out.count(f"@mom is {folder}/*.md, which isn't there now"), 2)
+        self.assertEqual(out.count(f"@mom includes {folder}/*.md, which isn't there now"), 2)
         self.assertIn("forgot @mom", self.run_lines("/files forget @mom"))
-        self.assertEqual(self.store.resources(), {"pic": f"{folder}/photo.png"})
+        self.assertEqual(self.store.resources(), {"pic": [f"{folder}/photo.png"]})
+
+    def test_a_name_with_one_path_gone_still_gives_the_rest(self):
+        folder = self.vault()
+        self.run_lines(f"/files {folder}/visit.md {self.tmp}/plan.txt @both", "/files clear")
+        (self.tmp / "plan.txt").unlink()
+        out = self.run_lines("read @both")
+        self.assertIn(f"@both includes {self.tmp}/plan.txt, which isn't there now", out)
+        self.assertIn("visit on sunday", self.fake.requests[-1]["messages"][0]["content"])
 
     def test_queued_files_do_not_follow_you_to_another_session(self):
         folder = self.vault()
@@ -421,7 +448,8 @@ class ReplTest(unittest.TestCase):
 
     def test_files_alone_shows_everything_in_one_place(self):
         folder = self.vault()
-        out = self.run_lines(f'read "{folder}/visit.md"', f"/files {folder}/*.md mom", "/files")
+        out = self.run_lines(f'read "{folder}/visit.md"', f"/files {folder}/*.md @mom",
+                             "/files @mom", "/files")
         listing = out.rsplit("they go with your next message", 1)[1]
         self.assertRegex(listing, r"in this conversation.*\n  #1  " + str(folder) + r"/visit.md \(text")
         self.assertRegex(listing, r"queued for your next message:\n.*2 files from @mom")
@@ -430,9 +458,87 @@ class ReplTest(unittest.TestCase):
         self.run_lines("/file clear")  # the singular works, as /session and /model do
         self.assertEqual(self.repl.queued, [])
 
+    def browse(self, act):
+        """Run /files with a stand-in picker: act(rows, options) returns the chosen row."""
+        seen = {}
+
+        def picker(rows, label, **options):
+            seen.update(options, rows=rows, labels=[label(r) for r in rows])
+            return act(rows, options)
+
+        self.repl.picker = picker
+        out = self.run_lines("/files")
+        return out, seen
+
+    def test_files_opens_a_list_of_everything(self):
+        folder = self.vault()
+        self.repl.picker = None
+        self.run_lines(f'read "{folder}/visit.md"', f"/files {folder}/recipe.md @cake",
+                       "/files @cake")
+        out, seen = self.browse(lambda rows, options: None)
+        self.assertEqual([(r.kind, r.title) for r in seen["rows"]],
+                         [("attached", "visit.md"), ("queued", "recipe.md"), ("name", "@cake")])
+        self.assertEqual(seen["labels"][0], ("visit.md", f"message #1 · text, 15 B · {folder}"))
+        self.assertEqual(seen["labels"][1][1], f"queued · text, 9 B · {folder}")
+        self.assertEqual(seen["labels"][2], ("@cake", f"name · {folder}/recipe.md"))
+        self.assertEqual((seen["title"], seen["delete_label"]), ("Files", "remove"))
+        for row in seen["rows"]:  # nobody should think a file on disk is about to be deleted
+            question, done = seen["wording"](row)
+            expected = {"attached": "not from disk", "queued": "Unqueue", "name": "its files stay"}
+            self.assertIn(expected[row.kind], question)
+            self.assertLess(len(question + " · any other key keeps it"), 100)  # fits a terminal
+            self.assertNotIn("delete", (question + done).lower())
+
+    def test_removing_a_file_takes_it_out_of_the_conversation_not_off_the_disk(self):
+        folder = self.vault()
+        self.run_lines(f'read "{folder}/visit.md" and "{folder}/recipe.md"')
+        self.assertIn("visit on sunday", self.fake.requests[-1]["messages"][0]["content"])
+        self.browse(lambda rows, options: options["delete"](rows[0]))
+        self.run_lines("and now?")
+        sent = self.fake.requests[-1]["messages"][0]["content"]
+        self.assertNotIn("visit on sunday", sent)  # no longer costs context
+        self.assertIn("plum cake", sent)           # the other file is still there
+        self.assertTrue((folder / "visit.md").is_file())
+        message = self.store.messages(self.repl.session.id)[0]
+        self.assertEqual([Path(a.path).name for a in message.attachments], ["recipe.md"])
+        self.assertIn("visit.md", message.content)  # the message itself is untouched
+
+    def test_removing_queued_files_and_names_from_the_list(self):
+        folder = self.vault()
+        self.repl.picker = None
+        self.run_lines(f"/files {folder}/*.md @mom", "/files @mom")
+
+        def act(rows, options):
+            for row in rows:
+                if row.kind in ("queued", "name") and row.title != "visit.md":
+                    options["delete"](row)
+
+        self.browse(act)
+        self.assertEqual([Path(a.path).name for a in self.repl.queued], ["visit.md"])
+        self.assertEqual(self.store.resources(), {})
+
+    def test_enter_queues_a_fresh_copy(self):
+        folder = self.vault()
+        self.run_lines(f'read "{folder}/visit.md"')
+        (folder / "visit.md").write_text("visit moved to monday")
+        out, _ = self.browse(lambda rows, options: rows[0])
+        self.assertIn(f"queued {folder}/visit.md (text, 21 B)", out)
+        self.assertEqual(self.repl.queued[0].content, "visit moved to monday")
+
+        self.repl.picker = None
+        self.run_lines("/files clear", f"/files {folder}/*.md @mom", "/files clear")
+        out, _ = self.browse(lambda rows, options: next(r for r in rows if r.kind == "name"))
+        self.assertIn("queued 2 files from @mom", out)
+        out, _ = self.browse(lambda rows, options: next(r for r in rows if r.kind == "queued"))
+        self.assertIn("that is already queued", out)
+
+    def test_files_with_nothing_to_show_just_explains(self):
+        self.repl.picker = lambda *a, **k: self.fail("there is nothing to list")
+        self.assertIn("no files yet", self.run_lines("/files"))
+
     def test_names_complete(self):
-        self.store.set_resource("mom", "/x/mom/*.md")
-        self.store.set_resource("money", "/x/money.md")
+        self.store.set_resource("mom", ["/x/mom/*.md"])
+        self.store.set_resource("money", ["/x/money.md"])
         self.assertEqual(self.repl.completions("/files mo"), ["mom", "money"])
         self.assertEqual(self.repl.completions("/files @mon"), ["@money"])
         self.assertEqual(self.repl.completions("what does @mo"), ["@mom", "@money"])

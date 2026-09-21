@@ -39,17 +39,21 @@ def _clip(text, width):
 
 class Picker:
     def __init__(self, items, label, *, title="", search=None, key=None, height=10, query="",
-                 start=0, current=None, delete=None, protect=None):
+                 start=0, current=None, delete=None, protect=None, wording=None,
+                 delete_label="delete"):
         """label(item) -> (text, detail). search(query) -> items found some other way (say,
         by message text), matched to `items` by key(item). query pre-fills the filter; start
         is the row the cursor begins on. current is the key of the item in use now: its row
         keeps a • when the cursor is elsewhere.
 
         delete(item) makes rows deletable (Ctrl-D, then y to confirm). protect(item) returns
-        the reason an item may not be deleted, or None."""
+        the reason an item may not be deleted, or None. wording(item) returns (question, done)
+        to use instead of "Delete ...?" and "deleted ...", for lists where deleting a row does
+        not destroy the thing it names; delete_label is the word for it in the key hints."""
         self.items, self.label, self.title = list(items), label, title
         self.search, self.key, self.height = search, key or id, height
         self.current, self.delete, self.protect = current, delete, protect
+        self.wording, self.delete_label = wording, delete_label
         self.confirming = None      # the item whose deletion is waiting for a "y"
         self.message = ""           # one line about what the last key did
         self.query, self.index, self.top = query, 0, 0
@@ -114,23 +118,27 @@ class Picker:
         if key not in ("y", "Y"):
             self.message = "kept."
             return None
+        done = self.wording(item)[1] if self.wording else f"deleted “{self.label(item)[0]}”"
         self.delete(item)
         self.items = [i for i in self.items if self.key(i) != self.key(item)]
         index, query = self.index, self.query
         self._refilter()            # with the same filter, and the cursor where it was
         self.query, self.index = query, max(0, min(index, len(self.matches) - 1))
         self.top = max(0, self.index - self.height + 1)
-        self.message = f"deleted “{self.label(item)[0]}”"
+        self.message = done
         return None
 
     def lines(self, width):
         width = max(width - 1, 20)
         count = f"{len(self.matches)} of {len(self.items)}" if self.query else f"{len(self.items)}"
-        keys = "type to filter · ↑↓ · Enter" + " · Ctrl-D delete" * bool(self.delete) + " · Esc"
+        keys = ("type to filter · ↑↓ · Enter"
+                + f" · Ctrl-D {self.delete_label}" * bool(self.delete) + " · Esc")
         head = f"{DIM}{_clip(f'{self.title} ({count}) · {keys}', width)}{RESET}"
         if self.confirming is not None:
             name = self.label(self.confirming)[0]
-            head = f"{BOLD_RED}{_clip(f'Delete “{name}”? y deletes it for good · any other key keeps it', width)}{RESET}"
+            question = (self.wording(self.confirming)[0] if self.wording
+                        else f"Delete “{name}”? y deletes it for good")
+            head = f"{BOLD_RED}{_clip(f'{question} · any other key keeps it', width)}{RESET}"
         elif self.message:
             head = f"{DIM}{_clip(self.message, width)}{RESET}"
         lines = [head, _clip(f"› {self.query}", width)]

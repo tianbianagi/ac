@@ -74,7 +74,8 @@ CREATE INDEX attachments_message ON attachments(message_id);
 # Who wrote the title: "auto" (the first message), "model" or "user".
 TITLE_SOURCE_SCHEMA = "ALTER TABLE sessions ADD COLUMN title_source TEXT;"
 
-# Names the user gave to paths (/files PATH NAME), usable from every session as @NAME.
+# Names the user gave to paths (/files PATH... @NAME), usable from every session as @NAME.
+# path holds a JSON list; a row from before names could hold several paths is one bare path.
 RESOURCES_SCHEMA = """
 CREATE TABLE resources (
     name       TEXT PRIMARY KEY,
@@ -125,6 +126,7 @@ class Attachment:
     data: bytes | None = None
     note: str | None = None
     group: str | None = None    # the pattern that brought it in (src/**); not stored
+    id: int | None = field(default=None, compare=False)  # its row, once it has been saved
 
     @property
     def size(self):
@@ -329,15 +331,17 @@ class Store:
     # -- named paths ------------------------------------------------------
 
     def resources(self):
-        """{name: path} for every named path."""
-        return {r["name"]: r["path"] for r in
-                self.db.execute("SELECT name, path FROM resources ORDER BY name")}
+        """{name: [paths]} for every name."""
+        rows = self.db.execute("SELECT name, path FROM resources ORDER BY name")
+        return {r["name"]: json.loads(r["path"]) if r["path"].startswith("[") else [r["path"]]
+                for r in rows}  # stored paths are absolute, so only a list starts with "["
 
-    def set_resource(self, name, path):
+    def set_resource(self, name, paths):
         with self.db:
             self.db.execute(
                 """INSERT INTO resources (name, path, created_at) VALUES (?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET path = excluded.path""", (name, path, _now()))
+                   ON CONFLICT(name) DO UPDATE SET path = excluded.path""",
+                (name, json.dumps(list(paths)), _now()))
 
     def delete_resource(self, name):
         with self.db:
@@ -378,12 +382,17 @@ class Store:
                    WHERE m.session_id = ? ORDER BY a.message_id, a.position""", (session_id,)):
             attached.setdefault(a["message_id"], []).append(Attachment(
                 path=a["path"], kind=a["kind"], content=a["content"], data=a["data"],
-                note=a["note"]))
+                note=a["note"], id=a["id"]))
         rows = self.db.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY seq", (session_id,))
         return [Message(**{**dict(r), "skills": json.loads(r["skills"]) if r["skills"] else None,
                            "attachments": attached.get(r["id"], [])})
                 for r in rows]
+
+    def delete_attachment(self, attachment_id):
+        """Take one file out of a conversation. The message it came with stays."""
+        with self.db:
+            self.db.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
 
     def delete_messages_from(self, session_id, seq):
         """Drop message seq and everything after it."""

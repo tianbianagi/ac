@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+from collections import namedtuple
 from pathlib import Path
 
 from . import config, files, render, skills, titles
@@ -45,11 +46,14 @@ Skills and prompt
   /skill rm NAME          detach a skill
   /system [TEXT|clear]    show, set or clear this session's own system text
   /context                show token usage and the exact system prompt being sent
-  /files                  list the files in this conversation, what is queued, and your names
-  /files PATH [NAME]      queue files for your next message. Spaces in the path need no
-                          quotes. A NAME as the last word makes @NAME stand for the path, in
-                          every session: /files ~/my notes/*.md notes
-                          Also: /files NAME, /files forget NAME, /files clear
+  /files                  browse the files in this conversation, what is queued, and your
+                          names: Enter queues a fresh copy, Ctrl-D removes one (from the
+                          conversation, the queue or your names: never from disk)
+  /files PATH...          queue files for your next message: one path or several, and spaces
+                          in a path need no quotes
+  /files PATH... @NAME    name them instead (nothing is queued): @NAME in any message, in any
+                          session, then attaches them.  /files ~/my notes/*.md ~/plan.pdf @trip
+                          Also: /files @NAME queues a name, /files forget NAME, /files clear
 Model
   /models                 pick a model from a list, the same way
   /models NAME|NUMBER     ...or switch straight to one; the conversation carries over
@@ -493,11 +497,11 @@ class Repl:
 
     def cmd_files(self, arg):
         """Everything about files in one place, the way /sessions and /models work: on its own
-        it lists; with a path it queues files for the next message, and can name the path."""
+        it lists; with paths it queues files for the next message, and can name them."""
         names = self.store.resources()
         action, _, rest = arg.partition(" ")
         if not arg:
-            return self._show_files(names)
+            return self._browse_files(names) if self.picker else self._show_files(names)
         if action == "clear" and not rest:
             self.queued = []
             return self.note("nothing is queued now.")
@@ -506,21 +510,27 @@ class Repl:
             done = self.store.delete_resource(name)
             return self.note(f"forgot @{name}" if done else f"there is no @{name}")
 
-        ref = self._named_or_path(arg, names)
-        if ref is None:                         # not a path as it stands: is a name on the end?
-            for path, name in files.name_splits(arg):
-                ref = files.resolve(path, explicit=True)
-                if ref is not None:
-                    break
-            else:
-                return self.error(f"nothing matches {files.clean_path(arg)}. To name a path: "
-                                  "/files PATH NAME")
+        entries, name, problems = files.parse_command(arg, names)
+        if any(p.startswith("nothing matches") for p in problems) or not entries:
+            for problem in problems:            # all or nothing: never half a name
+                self.error(problem)
+            return self.note("usage: /files PATH... [@NAME]   (nothing was queued)")
+        refs = [ref for found, _ in entries for ref in found]
+        if name is not None:
             if not files.NAME.fullmatch(name) or name in ("clear", "forget"):
                 return self.error(f"'{name}' can't be a name: use letters, digits, - and _")
-            self.store.set_resource(name, files.portable(path))
-            self.note(f"@{name} now means {files.display_path(files.portable(path))}")
-            ref = ref._replace(label=f"@{name}")
-        got, problems = files.read_refs([ref], already=self.queued)
+            paths = list(dict.fromkeys(path for _, kept in entries for path in kept))
+            self.store.set_resource(name, paths)
+            count = sum(len(ref.matches) if ref.matches is not None else 1 for ref in refs)
+            self.note(f"@{name} now means " + ", ".join(files.display_path(p) for p in paths)
+                      + f" ({count} file{'s' * (count != 1)} right now)")
+            # Naming is only naming. Queueing too would send these files with the next message
+            # even if it never mentions them.
+            return self.note(f"write @{name} in a message to attach them, or /files @{name} to "
+                             "queue them now")
+        for problem in problems:
+            self.warn(problem)
+        got, problems = files.read_refs(refs, already=self.queued)
         for problem in problems:
             self.warn(problem)
         self.queued += got
@@ -534,14 +544,53 @@ class Repl:
 
     cmd_file = cmd_files
 
-    def _named_or_path(self, arg, names):
-        word = arg.strip().lstrip("@").lower()
-        if word in names:
-            ref = files.resolve(names[word], explicit=True)
-            if ref is None:
-                self.warn(f"@{word} is {files.display_path(names[word])}, which isn't there now")
-            return ref._replace(label=f"@{word}") if ref else None
-        return files.resolve(files.clean_path(arg), explicit=True)
+    def _browse_files(self, names):
+        """The list view: every file in the conversation, what is queued, and the names."""
+        Row = namedtuple("Row", "kind key title detail item")
+        rows = []
+        for m in self.store.messages(self.session.id):
+            for a in m.attachments:
+                rows.append(Row("attached", f"a{a.id}", *self._file_label(a, f"message #{m.seq}"), a))
+        for a in self.queued:
+            rows.append(Row("queued", f"q{id(a)}", *self._file_label(a, "queued"), a))
+        for name, paths in names.items():
+            more = f" +{len(paths) - 1} more" if len(paths) > 1 else ""
+            rows.append(Row("name", f"n{name}", f"@{name}",
+                            f"name · {files.display_path(paths[0])}{more}", name))
+        if not rows:
+            return self._show_files(names)
+
+        def wording(row):
+            if row.kind == "attached":
+                return (f"Remove “{row.title}” from this conversation (not from disk)? y removes it",
+                        f"removed “{row.title}” from the conversation")
+            if row.kind == "queued":
+                return f"Unqueue “{row.title}”? y removes it", f"unqueued “{row.title}”"
+            return f"Forget {row.title} (its files stay)? y forgets it", f"forgot {row.title}"
+
+        def remove(row):
+            if row.kind == "attached":
+                self.store.delete_attachment(row.item.id)
+            elif row.kind == "queued":
+                self.queued = [a for a in self.queued if a is not row.item]
+            else:
+                self.store.delete_resource(row.item)
+
+        chosen = self.picker(rows, lambda r: (r.title, r.detail), title="Files",
+                             key=lambda r: r.key, delete=remove, wording=wording,
+                             delete_label="remove")
+        if chosen is None:
+            return self.note("/files PATH... [@NAME] queues files for your next message")
+        if chosen.kind == "queued":
+            return self.note("that is already queued.")
+        return self.cmd_files(chosen.title if chosen.kind == "name" else f'"{chosen.item.path}"')
+
+    def _file_label(self, attachment, where):
+        path = Path(attachment.path.split("#")[0])
+        page = "#" + attachment.path.split("#")[1] if "#" in attachment.path else ""
+        note = f" · {attachment.note}" if attachment.note else ""
+        return (path.name + page, f"{where} · {attachment.kind}, {files.size_label(attachment.size)}"
+                                  f"{note} · {files.display_path(path.parent)}")
 
     def _show_files(self, names):
         attached = [(m, a) for m in self.store.messages(self.session.id) for a in m.attachments]
@@ -555,12 +604,14 @@ class Repl:
                 self.say(line)
         if names:
             self.note("names (write @NAME in a message):")
-            for name, path in names.items():
-                self.say(f"  @{name:<14} {self.style.dim(files.display_path(path))}")
+            for name, paths in names.items():
+                for n, path in enumerate(paths):
+                    self.say(f"  {('@' + name if n == 0 else ''):<15} "
+                             f"{self.style.dim(files.display_path(path))}")
         if not (attached or self.queued or names):
             self.note("no files yet. Name a path in a message (/path, ~/path, ./path, src/** or "
                       "@name) and it is read and sent along.")
-        self.note("/files PATH [NAME] queues files for your next message · /files forget NAME "
+        self.note("/files PATH... [@NAME] queues files for your next message · /files forget NAME "
                   "· /files clear")
 
     def cmd_context(self, arg):

@@ -102,19 +102,29 @@ def find_refs(text, names=None, problems=None):
     found, names = [], names or {}
     for word, explicit in _candidates(text):
         if explicit and word.lower() in names:
-            ref = resolve(names[word.lower()], explicit=True)
-            if ref is None:
-                if problems is not None and f"@{word}" not in " ".join(problems):
-                    problems.append(f"@{word.lower()} is {display_path(names[word.lower()])}, "
-                                    "which isn't there now")
-                continue
-            ref = ref._replace(label=f"@{word.lower()}")
+            refs = named_refs(word.lower(), names, problems)
         else:
-            ref = resolve(word, explicit)
-        if ref is not None and ref._replace(label=None) not in [r._replace(label=None)
-                                                                for r in found]:
-            found.append(ref)
+            refs = [resolve(word, explicit)]
+        for ref in refs:
+            if ref is not None and ref._replace(label=None) not in [r._replace(label=None)
+                                                                    for r in found]:
+                found.append(ref)
     return found
+
+
+def named_refs(name, names, problems=None):
+    """Refs for everything a name stands for, labelled with it. A path that has gone is
+    reported in problems rather than silently skipped."""
+    refs = []
+    for path in names[name]:
+        ref = resolve(path, explicit=True)
+        if ref is not None:
+            refs.append(ref._replace(label=f"@{name}"))
+        elif problems is not None:
+            line = f"@{name} includes {display_path(path)}, which isn't there now"
+            if line not in problems:
+                problems.append(line)
+    return refs
 
 
 def find_paths(text):
@@ -130,18 +140,38 @@ def clean_path(text):
     return re.sub(r"\\(.)", r"\1", text)
 
 
-def name_splits(text):
-    """The ways '"PATH" NAME' or "PATH NAME" can be read, as (path, name) pairs. The caller
-    tries the whole text as a path first, so a path that itself contains spaces is found whole
-    before its last word is ever taken for a name."""
-    text, splits = text.strip(), []
-    quoted = re.fullmatch(r"""(["'])(.+)\1\s+(\S+)""", text)
-    if quoted:
-        splits.append((quoted.group(2), quoted.group(3)))
-    before, sep, after = text.rpartition(" ")
-    if sep:
-        splits.append((clean_path(before), after))
-    return [(path, name.lstrip("@").lower()) for path, name in splits]
+def parse_command(text, names):
+    """What "/files ARG..." asks for: (entries, name, problems).
+
+    Each entry is (refs, paths to remember). Arguments are paths, patterns, or existing names;
+    a last argument written @NAME, after at least one other, is the name to give them all.
+    Quoting is optional even for paths with spaces: the longest run of words that names
+    something real is taken as one path, so "~/My Notes/a.md ~/b.md" is two paths.
+    """
+    tokens = list(_TOKEN.finditer(text))
+    name = None
+    if len(tokens) > 1 and tokens[-1].group(3) and tokens[-1].group(3).startswith("@"):
+        name = tokens.pop().group(3)[1:].lower()
+    entries, problems, i = [], [], 0
+    while i < len(tokens):
+        quoted = tokens[i].group(1) or tokens[i].group(2)
+        last = i if quoted else next((k - 1 for k in range(i + 1, len(tokens))
+                                      if not tokens[k].group(3)), len(tokens) - 1)
+        for j in range(last, i - 1, -1):        # the longest reading first
+            word = quoted or re.sub(r"\\(.)", r"\1", text[tokens[i].start():tokens[j].end()])
+            known = word.lstrip("@").lower()
+            if j == i and not quoted and known in names:
+                entries.append((named_refs(known, names, problems), names[known]))
+                break
+            ref = resolve(word, explicit=True)
+            if ref is not None:
+                entries.append(([ref], [portable(word)]))
+                break
+        else:
+            j = i
+            problems.append(f"nothing matches {quoted or tokens[i].group(3)}")
+        i = j + 1
+    return entries, name, problems
 
 
 def portable(path):
@@ -190,6 +220,10 @@ def _drop_git_ignored(paths):
         return paths
     dropped = {root / name for name in ignored.stdout.split("\0") if name}
     return [p for p in paths if p not in dropped]
+
+
+def size_label(n):
+    return _size(n)
 
 
 def _size(n):
@@ -362,6 +396,8 @@ def read_refs(refs, already=()):
                 # The note tells report.pdf#2-3 from report.pdf#5: same path, different pages.
                 taken = {(a.path, a.note) for a in list(already) + attachments}
                 got = [a for a in got if (a.path, a.note) not in taken]
+                for a in got:
+                    a.group = ref.label         # a named file is announced under its name
             attachments += got
             problems += notes
         except FileError as e:
@@ -388,6 +424,9 @@ def announce(attachments, verb="attached"):
         else:
             lines.append(f"{verb} {describe(a)}")
     for pattern, items in groups.items():
+        if len(items) == 1:
+            lines.append(f"{verb} {describe(items[0])}")
+            continue
         lines.append(f"{verb} {len(items)} files from {pattern} "
                      f"({_size(sum(a.size for a in items))})"
                      + ("; /files lists them" if verb == "attached" else ""))

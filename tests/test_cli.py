@@ -100,7 +100,7 @@ class CliTest(unittest.TestCase):
         note = self.tmp / "my notes" / "plan.md"
         note.parent.mkdir()
         note.write_text("ship on friday")
-        self.store().set_resource("plan", str(note))
+        self.store().set_resource("plan", [str(note)])
         code, out, err = self.ac("ask", "when do we ship, per @plan ?")
         self.assertEqual(code, 0)
         self.assertIn("attached", err)

@@ -135,6 +135,18 @@ class PickerTest(unittest.TestCase):
         picker.handle("y")
         self.assertEqual((self.deleted, picker.query), ([], "y"))
 
+    def test_lists_can_use_their_own_words_for_removing_a_row(self):
+        picker = self.deletable(delete_label="remove", wording=lambda s: (
+            f"Take {s.title} out? The file is not touched · y removes it", f"removed {s.title}"))
+        self.assertIn("Ctrl-D remove", ANSI.sub("", picker.lines(120)[0]))
+        picker.handle("ctrl-d")
+        self.assertEqual(ANSI.sub("", picker.lines(120)[0]),
+                         "Take Planning a Trip to Lisbon out? The file is not touched · y removes it "
+                         "· any other key keeps it")
+        picker.handle("y")
+        self.assertEqual(ANSI.sub("", picker.lines(120)[0]), "removed Planning a Trip to Lisbon")
+        self.assertNotIn("for good", "".join(picker.lines(120)))
+
     def test_a_picker_without_delete_does_not_offer_it(self):
         self.assertNotIn("delete", ANSI.sub("", self.picker.lines(90)[0]).lower())
         self.assertIsNone(self.picker.handle("delete"))

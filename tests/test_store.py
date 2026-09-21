@@ -41,15 +41,20 @@ class StoreTest(unittest.TestCase):
 
     def test_named_paths(self):
         self.assertEqual(self.store.resources(), {})
-        self.store.set_resource("mom", "/vault/mom/*.md")
-        self.store.set_resource("plan", "/notes/plan.md")
-        self.store.set_resource("mom", "/vault/mum/*.md")  # naming again moves the name
-        self.assertEqual(self.store.resources(), {"mom": "/vault/mum/*.md", "plan": "/notes/plan.md"})
-        self.assertTrue(self.store.delete_resource("plan"))
-        self.assertFalse(self.store.delete_resource("plan"))
+        self.store.set_resource("mom", ["/vault/mom/*.md"])
+        self.store.set_resource("trip", ["/notes/plan.md", "/notes/my tickets/*.pdf"])
+        self.store.set_resource("mom", ["/vault/mum/*.md"])  # naming again moves the name
+        self.assertEqual(self.store.resources(), {
+            "mom": ["/vault/mum/*.md"], "trip": ["/notes/plan.md", "/notes/my tickets/*.pdf"]})
+        self.assertTrue(self.store.delete_resource("trip"))
+        self.assertFalse(self.store.delete_resource("trip"))
         session = self.make()
         self.store.delete(session.id)
-        self.assertEqual(self.store.resources(), {"mom": "/vault/mum/*.md"})  # not tied to a session
+        self.assertEqual(self.store.resources(), {"mom": ["/vault/mum/*.md"]})  # not per session
+
+    def test_a_name_saved_before_names_could_hold_several_paths(self):
+        self.store.db.execute("INSERT INTO resources VALUES ('old', '/vault/old/*.md', '2026-01-01')")
+        self.assertEqual(self.store.resources(), {"old": ["/vault/old/*.md"]})
 
     def test_update(self):
         s = self.make(skills=["a"])
@@ -141,6 +146,17 @@ class StoreTest(unittest.TestCase):
         self.store.delete_messages_from(fork.id, 1)
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM attachments").fetchone()[0], 0)
         self.assertEqual(self.store.list(search="alpha"), [])  # file text isn't searched as chat
+
+    def test_delete_one_attachment(self):
+        s = self.make()
+        self.store.add_message(s.id, "user", "look", attachments=[
+            Attachment("/a.md", "text", content="alpha"), Attachment("/b.md", "text", content="beta")])
+        first, second = self.store.messages(s.id)[0].attachments
+        self.assertIsNotNone(first.id)
+        self.assertEqual(first, Attachment("/a.md", "text", content="alpha"))  # the id isn't identity
+        self.store.delete_attachment(first.id)
+        (message,) = self.store.messages(s.id)
+        self.assertEqual(([a.path for a in message.attachments], message.content), (["/b.md"], "look"))
 
     def test_list_order_and_search(self):
         a = self.make(title="alpha")

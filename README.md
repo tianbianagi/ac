@@ -73,14 +73,23 @@ attached ~/notes/plan.md (text, 3.1 KB)
   text (about 100k tokens; `max_attach_kb` in `config.toml` changes that) and tells you what it
   left out. What you spell out is taken as meant, so `~/.config/ac/**` works although `.config`
   is hidden. You get one line back, `attached 14 files from src/** (138 KB)`; `/files` lists them.
-- **`/files` and names.** `/files` on its own lists the files in the conversation, what is
-  queued and your names. `/files PATH` queues files for your next message. Everything after the
-  command is the path, so one with spaces needs no quotes:
-  `/files ~/Library/Mobile Documents/notes/*.md`. Add a NAME as the last word and the path gets a name: after
-  `/files ~/vault/mom/*.md mom`, writing `@mom` in any message, in any session or in
-  `acc ask`, attaches whatever that path holds at that moment. `/files mom` queues it,
-  `/files forget mom` removes a name and `/files clear` empties the queue. Names complete with Tab. A name wins over a file of the
-  same name, and if its path has gone you are told rather than left guessing.
+- **`/files` and names.** `/files` on its own opens a list, like `/sessions`: every file in the
+  conversation, what is queued, and your names. Type to filter; Enter queues a fresh copy of the
+  highlighted file (or a named set); Ctrl-D removes the row after a `y`: a file leaves the
+  conversation and stops costing context, a queued file leaves the queue, a name is forgotten.
+  Nothing on disk is ever touched. `/files PATH...` queues files for your next message: one path or
+  several, and a path with spaces needs no quotes, because the longest run of words that names
+  something real is taken as one path (quotes and backslash-escapes work too):
+  `/files ~/Library/Mobile Documents/notes/*.md ~/plan.pdf`. If one of them matches nothing,
+  nothing is queued. End with `@NAME` and the paths get a name *instead* of being queued (so
+  that defining a name never sends files along with some unrelated next message): after
+  `/files ~/vault/mom/*.md ~/photos/mom.md @mom`, writing `@mom` in any message, in any session
+  or in `acc ask`, attaches whatever those paths hold at that moment. Only an `@` makes a name; a
+  plain last word is just another path. An `@NAME` that isn't last is an existing name, so
+  `/files @mom ~/dad/*.md @family` builds one name from another. `/files @mom` queues it,
+  `/files forget mom` removes a name and `/files clear` empties the queue. Names complete with
+  Tab. A name wins over a file of the same name, and if one of its paths has gone you are told
+  and get the rest.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
   `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
   (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A
