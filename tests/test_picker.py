@@ -198,6 +198,28 @@ class PickerTest(unittest.TestCase):
         self.assertNotIn("•", "".join(picker.lines(70)[2:]))
         self.assertNotIn("•", "".join(self.picker.lines(70)))  # and none where nothing is current
 
+    def test_no_line_is_ever_as_wide_as_the_terminal(self):
+        # A row that wraps makes the picker repaint one line short, stacking up stale headers.
+        long_detail = "name · ~/Library/Mobile Documents/com~apple~CloudDocs/Vault/notes/mom/*.md +3 more"
+        rows = [session(1, "@mom"), session(2, "a-very-long-file-name-" * 6 + ".md"),
+                session(3, "日本語のとても長いファイル名" * 4)]
+        details = {"id01": long_detail, "id02": "queued · text, 3 KB · ~/x", "id03": long_detail * 2}
+        picker = Picker(rows, lambda s: (s.title, details[s.id]), key=lambda s: s.id,
+                        delete=lambda s: None, title="Files", delete_label="remove")
+        for width in (24, 40, 57, 80, 114, 200):
+            for state in ("list", "confirm", "message", "filter"):
+                if state == "confirm":
+                    picker.handle("ctrl-d")
+                elif state == "message":
+                    picker.handle("n")
+                elif state == "filter":
+                    picker.handle("m")
+                for line in picker.lines(width):
+                    shown = ANSI.sub("", line)
+                    columns = sum(2 if ord(c) > 0x2E80 else 1 for c in shown)
+                    self.assertLess(columns, width, (width, state, shown))
+            picker.handle("clear")
+
     def test_rows_never_wrap(self):
         wide = [session(n, "とても長い日本語のタイトル " * 6 + "and a long English tail " * 4)
                 for n in range(3)]

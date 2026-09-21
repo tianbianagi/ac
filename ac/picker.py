@@ -147,15 +147,19 @@ class Picker:
             text, detail = self.label(item)
             shown.append((text, detail + " · matched in messages" * (self.key(item) in self.deep)))
             marks.append("•" if self.current is not None and self.key(item) == self.current else " ")
-        # One detail column for all rows, so titles and details each line up.
-        room = max(width - 4 - min(max((len(d) for _, d in shown), default=0), width // 2), 10)
+        # One detail column for all rows, so titles and details each line up. A row is
+        # "M " + title (room) + "  " + detail (wide): it must never exceed width, because a row
+        # that wraps throws off the repaint, which counts lines.
+        widest = max((sum(_char_width(c) for c in d) for _, d in shown), default=0)
+        room = max(width - 4 - min(widest, width // 2), 10)
+        wide = max(width - 4 - room, 0)
         for n, (text, detail) in enumerate(shown, self.top):
             chosen = n == self.index
             row = _clip(text, room)
             pad = " " * max(room - sum(_char_width(c) for c in row), 0)
             mark = marks[n - self.top]
             lines.append(f"{BOLD_CYAN if chosen else ''}{'❯' if chosen else mark} {row}{RESET}"
-                         f"{pad}  {DIM}{_clip(detail, width - 2 - room)}{RESET}")
+                         f"{pad}  {DIM}{_clip(detail, wide)}{RESET}")
         if not self.matches:
             lines.append(f"{DIM}  nothing matches{RESET}")
         hidden = len(self.matches) - self.top - self.height
@@ -192,18 +196,21 @@ def _read_key(fd, decoder):
 
 
 def pick(items, label, *, title="", search=None, key=None, query="", start=0, current=None,
-         delete=None, protect=None, out=None, fd=None):
+         delete=None, protect=None, wording=None, delete_label="delete", out=None, fd=None):
     """Let the user choose one of items. Returns it, or None if they cancelled."""
     out = out or sys.stdout
     fd = sys.stdin.fileno() if fd is None else fd
     picker = Picker(items, label, title=title, search=search, key=key, query=query, start=start,
-                    current=current, delete=delete, protect=protect)
+                    current=current, delete=delete, protect=protect, wording=wording,
+                    delete_label=delete_label)
     decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
     saved = termios.tcgetattr(fd)
     drawn, result = 0, "cancel"
     try:
         tty.setcbreak(fd)
-        out.write("\033[?25l")                          # hide the cursor while repainting
+        # Hide the cursor, and turn line-wrapping off: a row that were ever too long is then cut
+        # short by the terminal instead of wrapping, which would break the repaint below.
+        out.write("\033[?25l\033[?7l")
         while True:
             lines = picker.lines(shutil.get_terminal_size((80, 24)).columns)
             out.write((f"\033[{drawn}A" if drawn else "") + "\r\033[J" + "\n".join(lines) + "\n")
@@ -216,6 +223,6 @@ def pick(items, label, *, title="", search=None, key=None, query="", start=0, cu
         result = "cancel"
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        out.write((f"\033[{drawn}A" if drawn else "") + "\r\033[J\033[?25h")  # leave no trace
+        out.write((f"\033[{drawn}A" if drawn else "") + "\r\033[J\033[?7h\033[?25h")  # no trace
         out.flush()
     return picker.selected if result == "accept" else None
