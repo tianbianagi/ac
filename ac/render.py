@@ -20,7 +20,7 @@ def use_color(stream):
 
 class Style:
     DIM, BOLD, RED, YELLOW, CYAN, RESET = "\033[2m", "\033[1m", "\033[31m", "\033[33m", "\033[36m", "\033[0m"
-    GREEN, MAGENTA = "\033[32m", "\033[35m"
+    GREEN, ORANGE = "\033[32m", "\033[38;5;208m"  # orange is a 256-colour shade
 
     def __init__(self, enabled):
         self.enabled = enabled
@@ -49,8 +49,8 @@ class Style:
     def green(self, text):
         return self._wrap(self.GREEN, text)
 
-    def magenta(self, text):
-        return self._wrap(self.MAGENTA, text)
+    def orange(self, text):
+        return self._wrap(self.ORANGE, text)
 
 
 class StreamRenderer:
@@ -169,7 +169,7 @@ def _status_left(status, cut):
     trims it, one step at a time."""
     s = status.session
     title = " ".join((s.title or "").split()) if s.persisted else "new session"
-    parts = [(title, "magenta")] * (cut < 2 and bool(title)) + [(status.model, "cyan")]
+    parts = [(title, "orange")] * (cut < 2 and bool(title)) + [(status.model, "cyan")]
     if status.skills:
         names = ", ".join(status.skills)
         parts.append((names if cut < 3 else f"{len(status.skills)} skill{'s' * (len(status.skills) != 1)}",

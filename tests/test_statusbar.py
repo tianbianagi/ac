@@ -81,7 +81,7 @@ class StatusBarTextTest(unittest.TestCase):
     def test_each_part_has_its_own_colour_and_no_background(self):
         style = Style(True)
         line = bar(skills=["concise"], queued=1, usage=(12_000, 32_000), speed=41, style=style)
-        self.assertIn(Style.MAGENTA + "Planning a trip to Lisbon" + Style.RESET, line)
+        self.assertIn(Style.ORANGE + "Planning a trip to Lisbon" + Style.RESET, line)
         self.assertIn(Style.CYAN + "qwen3.8:27b" + Style.RESET, line)
         self.assertIn(Style.GREEN + "concise" + Style.RESET, line)
         self.assertIn(Style.YELLOW + "1 file queued" + Style.RESET, line)
