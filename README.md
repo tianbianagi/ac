@@ -134,10 +134,20 @@ with `AC_SKILLS_PATH`. Attach from the `/skills` list, by name, or by path to an
 
 ## Behaviour worth knowing
 
-- **Context.** Ollama silently drops the oldest messages when the context fills. The status line
-  after each reply shows tokens used against the model's real context window, and warns at 80% and
-  95%. `/compact` continues in a *new* session seeded with a summary; the original is untouched.
-  Set a window explicitly with `/set num_ctx 32768`.
+- **The status bar.** The last row of the terminal always shows where you are and how full the
+  context is: `Planning a trip · qwen3.8:27b · concise · 2 files queued` on the left, and on
+  the right `12k/32k ▮▮▮▯▯▯▯▯ 38% · 41 tok/s`. While a reply is being written the right-hand side
+  adds what the model is doing (`waiting for qwen3.8:27b…`, `thinking 4s`, `210 tokens · 38 tok/s`).
+  A `+sys` after the skills means the session has its own system text. In a narrow window the
+  least useful parts go first: the speed, the session title, then the skill names; the context
+  meter always stays.
+  The bar stays out of the way of copying: it is drawn outside the scrolling region, and
+  `status_bar = false` in `config.toml` (or `AC_STATUS_BAR=0`) replaces it with a dim status line
+  printed after each reply, which is also what you get when output isn't a terminal.
+- **Context.** Ollama silently drops the oldest messages when the context fills. The status bar
+  shows tokens used against the model's real context window and turns yellow at 80% and red at
+  95%, when a warning is printed too. `/compact` continues in a *new* session seeded with a
+  summary; the original is untouched. Set a window explicitly with `/set num_ctx 32768`.
 - **Switching models.** `/models` lets you pick from the installed models; `/models NAME` (a
   unique prefix is enough) or `/models NUMBER` switches mid-chat. The whole conversation carries over to the new model, the
   choice is saved with the session, and every reply records which model wrote it (`acc export
@@ -168,6 +178,10 @@ export_dir = "~/Documents/chats"
 # Render replies as markdown in the terminal (default true).
 markdown = true
 
+# Pin a status bar to the last row of the terminal (default true). Off, the same numbers are
+# printed as a dim line after each reply.
+status_bar = true
+
 # How much text a pattern such as src/** may attach to one message, in KB (default 400).
 max_attach_kb = 400
 
@@ -197,6 +211,7 @@ are dropped, and if another session already owns the name, the session id is app
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
 | `AC_MARKDOWN` | `0` shows replies as raw markdown; overrides `markdown` in `config.toml` | rendered |
+| `AC_STATUS_BAR` | `0` prints a status line after each reply instead of the bar; overrides `status_bar` in `config.toml` | bar |
 | `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |

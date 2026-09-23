@@ -3,12 +3,14 @@
 import json
 import os
 import re
+from collections import namedtuple
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, files, skills
-from .markdown import MarkdownStream
+from .markdown import MarkdownStream, _width
 from .markdown import render as render_markdown
+from .picker import _clip as _clip_cells
 
 
 def use_color(stream):
@@ -18,6 +20,7 @@ def use_color(stream):
 
 class Style:
     DIM, BOLD, RED, YELLOW, CYAN, RESET = "\033[2m", "\033[1m", "\033[31m", "\033[33m", "\033[36m", "\033[0m"
+    GREEN, MAGENTA = "\033[32m", "\033[35m"
 
     def __init__(self, enabled):
         self.enabled = enabled
@@ -42,6 +45,12 @@ class Style:
 
     def cyan(self, text):
         return self._wrap(self.CYAN, text)
+
+    def green(self, text):
+        return self._wrap(self.GREEN, text)
+
+    def magenta(self, text):
+        return self._wrap(self.MAGENTA, text)
 
 
 class StreamRenderer:
@@ -135,6 +144,108 @@ def status_line(model, used, context, stats, skill_names):
         parts.append(f"{eval_count / (eval_ns / 1e9):.0f} tok/s")
     parts.append(f"skills: {', '.join(skill_names) or 'none'}")
     return " · ".join(parts)
+
+
+# What the status bar shows. session: the Session in use. skills: the labels of the attached
+# skills. queued: files waiting for the next message. usage: (tokens used, context length),
+# or None before the first reply. speed: tok/s of the latest reply. note: what a reply under
+# way is doing, shown next to the numbers in place of the speed.
+Status = namedtuple("Status", "session model skills queued usage speed note",
+                    defaults=((), 0, None, None, None))
+
+METER = 8  # cells in the context meter
+
+
+def usage_level(usage):
+    """None, "warn" at 80% of the context window and "alert" at 95%: the /compact thresholds."""
+    used, context = usage or (None, None)
+    if not used or not context:
+        return None
+    return "alert" if used >= 0.95 * context else "warn" if used >= 0.8 * context else None
+
+
+def _status_left(status, cut):
+    """Where you are, as (text, colour) segments: session, model, skills, queued files. cut
+    trims it, one step at a time."""
+    s = status.session
+    title = " ".join((s.title or "").split()) if s.persisted else "new session"
+    parts = [(title, "magenta")] * (cut < 2 and bool(title)) + [(status.model, "cyan")]
+    if status.skills:
+        names = ", ".join(status.skills)
+        parts.append((names if cut < 3 else f"{len(status.skills)} skill{'s' * (len(status.skills) != 1)}",
+                      "green"))
+    else:
+        parts.append(("no skills", "dim"))
+    if s.system:
+        parts[-1] = (parts[-1][0] + " +sys", "green")
+    if status.queued:
+        parts.append((f"{status.queued} file{'s' * (status.queued != 1)} queued", "yellow"))
+    return parts
+
+
+def _status_right(status, cut):
+    """The numbers, as segments: context used, with a meter, and the speed of the last reply."""
+    used, context = status.usage or (None, None)
+    colour = {"warn": "yellow", "alert": "red"}.get(usage_level(status.usage))
+    parts = []
+    if used is not None and context:
+        share = min(used / context, 1)
+        text = f"{fmt_tokens(used)}/{fmt_tokens(context)}"
+        filled = max(round(share * METER), 1)       # anything used shows: never an empty meter
+        text += " " + "▮" * filled + "▯" * (METER - filled)
+        parts.append((f"{text} {share:.0%}", colour))
+        if colour == "red":
+            parts.append(("nearly full · /compact", colour))
+    elif used is not None:
+        parts.append((f"{fmt_tokens(used)} ctx", None))
+    if status.note:                 # a reply under way: what it is doing, not the last one's speed
+        parts.append((status.note, "dim"))
+    elif status.speed and cut < 1:
+        parts.append((f"{status.speed:.0f} tok/s", "dim"))
+    return parts
+
+
+def _segments_text(segments):
+    return " · ".join(text for text, _ in segments)
+
+
+def _segments_paint(segments, style):
+    return style.dim(" · ").join(getattr(style, colour)(text) if colour else text
+                                 for text, colour in segments)
+
+
+def _segments_clip(segments, width):
+    """The segments that fit in width cells, the last one cut short if need be."""
+    kept = []
+    for text, colour in segments:
+        room = width - _width(_segments_text(kept)) - (3 if kept else 0)
+        if room <= 0:
+            break
+        kept.append((_clip_cells(text, room), colour))
+        if _width(text) > room:
+            break
+    return kept
+
+
+def status_bar(status, width, style):
+    """One line of exactly `width` cells for the bottom of the terminal: where you are on the
+    left, the numbers on the right, each part in its own colour. When there isn't room for
+    everything, the least useful parts go first: the speed, the session's title, then the
+    skill names. The context meter always stays."""
+    for cut in range(4):
+        left, right = _status_left(status, cut), _status_right(status, cut)
+        between = 2 if right else 0
+        gap = width - 2 - _width(_segments_text(left)) - _width(_segments_text(right)) - between
+        if gap >= 0:
+            break
+    else:
+        left = _segments_clip(left, max(width - 2 - _width(_segments_text(right)) - between, 0))
+        if not left:                    # not even room for that: the numbers alone, then
+            right, between = _segments_clip(right, width - 2), 0
+        gap = max(width - 2 - _width(_segments_text(left)) - _width(_segments_text(right))
+                  - between, 0)
+    pad = " " * (gap + between)
+    return f" {_segments_paint(left, style)}{pad}{_segments_paint(right, style)} "
 
 
 def _clip(text, width):

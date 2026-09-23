@@ -8,6 +8,7 @@ from pathlib import Path
 from . import __version__, config, files, picker, render, skills, titles
 from .ollama import Client, OllamaError, resolve_model
 from .repl import Repl, setup_readline
+from .statusbar import StatusBar
 from .store import Store, StoreError
 
 
@@ -40,6 +41,8 @@ def _interactive(store, client, session):
         setup_readline(repl)
     if picker.available():
         repl.picker = picker.pick
+        if config.status_bar():
+            repl.bar = StatusBar()
     repl.run()
 
 

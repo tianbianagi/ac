@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -721,6 +722,89 @@ class ReplTest(unittest.TestCase):
         self.fake.prompt_tokens = 960
         out = self.run_lines("hi")
         self.assertIn("context is nearly full", out)
+
+    # -- status bar -------------------------------------------------------
+
+    class Bar:
+        """A stand-in StatusBar: records what it is told to show, and when it is open."""
+
+        def __init__(self):
+            self.open_now, self.shown, self.events = False, [], []
+
+        def open(self):
+            self.open_now = True
+            self.events.append("open")
+
+        def close(self):
+            self.open_now = False
+            self.events.append("close")
+
+        def draw(self, paint):
+            self.shown.append(paint(100).strip())
+
+        def suspended(self):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def lend():
+                self.close()
+                yield
+                self.open()
+            return lend()
+
+    def test_status_bar_follows_the_reply_and_replaces_the_printed_line(self):
+        self.repl.bar = bar = self.Bar()
+        self.fake.reply("Hi ", "there", thinking="pondering")
+        out = self.run_lines("hello")
+        self.assertNotIn("tok/s · skills: none", out)         # the bar has the numbers now
+        self.assertEqual(bar.shown[0], "new session · m1 · no skills")
+        self.assertRegex(bar.shown[1], r"^hello · m1 · no skills +waiting for m1…$")
+        self.assertTrue(any(s.endswith("thinking 0s") for s in bar.shown))
+        self.assertTrue(any(re.search(r"\d tokens · \d+ tok/s$", s) for s in bar.shown))
+        self.assertTrue(bar.shown[-1].endswith("18/1.0k ▮▯▯▯▯▯▯▯ 2% · 7 tok/s"))
+        self.assertTrue(bar.shown[-1].startswith("hello · m1 · no skills"))
+        self.assertEqual(bar.events, ["open", "close"])       # opened for the run, closed after
+
+    def test_status_bar_shows_skills_queued_files_and_a_resumed_sessions_usage(self):
+        write_skill(self.tmp / "skills", "concise", "Be brief.")
+        note = self.tmp / "n.md"
+        note.write_text("x")
+        self.repl.bar = bar = self.Bar()
+        self.run_lines("hello", "/skills concise", f"/files {note}")
+        self.assertRegex(bar.shown[-1], r"· m1 · concise · 1 file queued +18/1\.0k")
+
+        resumed = self.make_repl(self.store.get(self.repl.session.id))
+        resumed.bar = bar = self.Bar()
+        self.repl = resumed
+        out = self.run_lines("/context")
+        self.assertTrue(bar.shown[0].endswith("18/1.0k ▮▯▯▯▯▯▯▯ 2%"))  # known before any reply
+        self.assertIn("usage    18 of 1.0k tokens", out)
+
+    def test_progress_counts_each_phase_from_its_first_token(self):
+        from ac.repl import _Progress
+        self.repl.bar, notes = self.Bar(), []
+        self.repl.refresh = lambda note=None: notes.append(note)
+        clock = [100.0]
+        with mock.patch("ac.repl.time.monotonic", lambda: clock[0]):
+            progress = _Progress(self.repl, "m1")
+            clock[0] += 30                      # the model loads: not thinking time
+            progress.tick("thinking")
+            clock[0] += 4.4
+            progress.tick("thinking")
+            clock[0] += 1
+            progress.tick("content")
+            clock[0] += 0.5
+            progress.tick("content")
+        self.assertEqual(notes, ["waiting for m1…", "thinking 0s", "thinking 4s",
+                                 "1 tokens · 0 tok/s", "2 tokens · 4 tok/s"])
+
+    def test_the_editor_gets_the_whole_screen(self):
+        self.repl.bar = bar = self.Bar()
+        self.repl.editor = lambda text: (bar.events.append(f"editing while open={bar.open_now}"),
+                                         text + "!")[1]
+        self.run_lines("hi", "/edit")
+        self.assertEqual(bar.events, ["open", "close", "editing while open=False", "open", "close"])
+        self.assertEqual(self.contents()[0], ("user", "hi!"))
 
     # -- failures ---------------------------------------------------------
 

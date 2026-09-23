@@ -9,7 +9,9 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from collections import namedtuple
+from contextlib import nullcontext
 from pathlib import Path
 
 from . import config, files, render, skills, titles
@@ -122,9 +124,11 @@ class Repl:
         self.style = style or render.Style(render.use_color(self.log))
         self.markdown = config.markdown()  # only takes effect where the output is a terminal
         self.picker = None          # picker.pick, when there is a real terminal to run it on
+        self.bar = None             # a StatusBar on the terminal's last row, when there is one
         self.listed = []            # ids as last numbered by /sessions, for /sessions N
         self.queued = []            # attachments from /files PATH, waiting for the next message
         self.last_usage = None  # (tokens used, context length) after the latest reply
+        self.speed = None       # tok/s of the latest reply
 
     # -- output -----------------------------------------------------------
 
@@ -146,6 +150,15 @@ class Repl:
         title = f" · {s.title}" if s.title else ""
         self.note(f"session {s.id} ({state}){title} · {s.model} · "
                   f"skills: {render.skills_label(s.skills)} · /help for commands")
+
+    def refresh(self, note=None):
+        """Repaint the status bar, if there is one, with the session as it is now."""
+        if self.bar is None:
+            return
+        s = self.session
+        status = render.Status(s, s.model, [skills.label(r) for r in s.skills],
+                               len(self.queued), self.last_usage, self.speed, note)
+        self.bar.draw(lambda width: render.status_bar(status, width, self.style))
 
     def show_tail(self, count=4):
         messages = self.store.messages(self.session.id)
@@ -173,10 +186,21 @@ class Repl:
             lines.append(line)
 
     def run(self):
+        if self.bar is not None:
+            self.bar.open()
+        try:
+            self._run()
+        finally:
+            if self.bar is not None:
+                self.bar.close()
+
+    def _run(self):
+        self._recall_usage()
         self.banner()
         if self.session.persisted:
             self.show_tail()
         while True:
+            self.refresh()
             try:
                 line = self.read()
             except EOFError:
@@ -246,6 +270,7 @@ class Repl:
         content, thinking, stats, status, error = [], [], {}, "complete", None
         stream = self.client.chat(s.model, payload, think=s.options.get("think"),
                                   options=options, keep_alive=s.options.get("keep_alive"))
+        progress = _Progress(self, s.model)
         try:
             for kind, data in stream:
                 if kind == "done":
@@ -253,6 +278,7 @@ class Repl:
                 else:
                     (thinking if kind == "thinking" else content).append(data)
                     renderer.feed(kind, data)
+                    progress.tick(kind)
         except KeyboardInterrupt:
             status = "interrupted"
         except OllamaError as e:
@@ -312,8 +338,11 @@ class Repl:
             used = stats["prompt_eval_count"] + stats.get("eval_count", 0)
         context = self.client.context_length(self.session.model)
         self.last_usage = (used, context)
-        self.note(render.status_line(self.session.model, used, context, stats,
-                                     [k.name for k in active]))
+        eval_ns, eval_count = stats.get("eval_duration"), stats.get("eval_count")
+        self.speed = eval_count / (eval_ns / 1e9) if eval_ns and eval_count else None
+        if self.bar is None:        # the bar shows these numbers; without one, print them
+            self.note(render.status_line(self.session.model, used, context, stats,
+                                         [k.name for k in active]))
         if used and context:
             if used >= 0.95 * context:
                 self.say(self.style.red(
@@ -340,8 +369,20 @@ class Repl:
                       "you left")
             self.queued = []
         self.session = session
-        self.last_usage = None
+        self.last_usage = self.speed = None
+        self._recall_usage()
         self.banner()
+
+    def _recall_usage(self):
+        """Context usage as it stood after the session's latest reply, from what that reply
+        recorded, so that a resumed session doesn't wait for the next one to show it."""
+        if not self.session.persisted:
+            return
+        for m in reversed(self.store.messages(self.session.id)):
+            if m.role == "assistant" and m.prompt_tokens is not None:
+                used = m.prompt_tokens + (m.eval_tokens or 0)
+                self.last_usage = (used, self.client.context_length(self.session.model))
+                return
 
     # -- commands: sessions -----------------------------------------------
 
@@ -811,7 +852,8 @@ class Repl:
         last = self._last_user() if self.session.persisted else None
         if last is None:
             return self.note("nothing to edit.")
-        text = self.editor(last.content).strip()
+        with self.bar.suspended() if self.bar else nullcontext():  # the editor wants the screen
+            text = self.editor(last.content).strip()
         if not text or text == last.content.strip():
             return self.note("unchanged; nothing sent.")
         self.store.delete_messages_from(self.session.id, last.seq)
@@ -882,6 +924,35 @@ class Repl:
         except (OllamaError, StoreError):
             options = []
         return [o for o in options if o.startswith(prefix)]
+
+
+class _Progress:
+    """Keeps the status bar's right-hand side telling what a reply is up to, a few times a
+    second at most: waiting for the model, thinking for how long, then tokens and speed."""
+
+    def __init__(self, repl, model, every=0.2):
+        self.repl, self.every = repl, every
+        self.first = None                  # when the current phase's first token arrived
+        self.tokens, self.drawn, self.phase = 0, None, "waiting"
+        self._show(f"waiting for {model}…")
+
+    def tick(self, kind):
+        now = time.monotonic()
+        if kind != self.phase:             # loading and prompt evaluation don't count
+            self.first = now
+        if kind == "thinking":
+            note = f"thinking {now - self.first:.0f}s"
+        else:
+            self.tokens += 1               # Ollama streams a token at a time, near enough
+            rate = self.tokens / (now - self.first) if now > self.first else 0
+            note = f"{self.tokens} tokens · {rate:.0f} tok/s"
+        if kind != self.phase or now - self.drawn >= self.every:  # a new phase shows at once
+            self.phase = kind
+            self._show(note)
+
+    def _show(self, note):
+        self.drawn = time.monotonic()
+        self.repl.refresh(note)
 
 
 def setup_readline(repl):
