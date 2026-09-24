@@ -180,14 +180,30 @@ class PickerTest(unittest.TestCase):
         self.assertEqual(on, {"id01"})
         self.assertEqual(self.keys("esc"), "cancel")
 
-    def test_in_a_toggle_list_some_rows_open_instead(self):
+    def test_right_opens_some_rows_and_left_goes_back(self):
         on = set()
         self.picker = Picker(self.items, label, key=lambda s: s.id,
                              toggle=lambda s: on.add(s.id), marked=lambda s: s.id in on,
-                             opens=lambda s: s.id == "id02")
-        self.assertIsNone(self.keys("enter"))           # an ordinary row toggles
-        self.assertEqual(self.keys("down", "enter"), "accept")  # this one closes the list
-        self.assertEqual((self.picker.selected.id, on), ("id02", {"id01"}))
+                             opens=lambda s: s.id == "id02", back=self.items[0])
+        self.assertIn("↑↓ · Enter toggles · → opens · Esc", self.plain(90)[0])
+        self.assertIsNone(self.keys("down", "enter"))   # Enter toggles even a row that opens
+        self.assertEqual(on, {"id02"})
+        self.assertIsNone(self.keys("down", "right"))   # → on a row that doesn't open: nothing
+        self.assertEqual(self.keys("up", "right"), "accept")
+        self.assertEqual(self.picker.selected.id, "id02")
+
+    def test_left_and_enter_on_the_way_back_choose_it(self):
+        back = self.items[0]
+        for keys in (("down", "down", "left"), ("enter",)):
+            on = set()
+            self.picker = Picker(self.items, label, key=lambda s: s.id,
+                                 toggle=lambda s: on.add(s.id), back=back)
+            self.assertEqual(self.keys(*keys), "accept")
+            self.assertIs(self.picker.selected, back)
+            self.assertEqual(on, set())               # going back toggles nothing
+
+    def test_left_without_a_way_back_does_nothing(self):
+        self.assertIsNone(self.keys("left", "right"))
 
     def test_nothing_matches(self):
         self.keys(*"zzz")

@@ -639,7 +639,7 @@ class ReplTest(unittest.TestCase):
             said.append(options["toggle"](name))       # Enter again takes it back out
             self.assertFalse(options["marked"](name))
             said.append(options["toggle"](name))
-            self.assertEqual(options["toggle_label"], "(un)queues/opens")
+            self.assertEqual(options["toggle_label"], "(un)queues")
 
         out, _ = self.browse(act)
         self.assertEqual(said, ["queued 2 files from @mom (24 B)", "unqueued @mom",
@@ -698,6 +698,37 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(back[1]["start"], 2)   # the cursor comes back to src/
         self.assertEqual([a.content for a in self.repl.queued], ["todo", "print('hi')"])
         self.assertIn("they go with your next message", out)
+
+    def test_enter_on_a_folder_queues_all_of_it(self):
+        here = self.tmp / "project"
+        (here / "src" / "lib").mkdir(parents=True)
+        (here / "src" / "main.py").write_text("print('hi')")
+        (here / "src" / "lib" / "util.py").write_text("x = 1")
+        (here / "empty").mkdir()
+        said = []
+
+        def act(rows, options):
+            src, empty = (next(r for r in rows if r.title == t) for t in ("src/", "empty/"))
+            said.append(options["toggle"](src))
+            self.assertTrue(options["marked"](src))
+            said.append(options["toggle"](empty))
+            self.assertFalse(options["marked"](empty))
+
+        seen = {}
+
+        def picker(rows, label, **options):
+            seen["label"] = label
+            act(rows, options)
+
+        self.work_in(here)
+        self.repl.picker = picker
+        out = self.run_lines("/files")
+        self.assertEqual(said, ["queued 2 files from src/ (16 B)", "nothing in empty/ to queue"])
+        self.assertEqual(sorted(a.content for a in self.repl.queued), ["print('hi')", "x = 1"])
+        self.assertIn("queued 2 files from src/", out)
+        dir_row = namedtuple("Row", "kind key title detail item")("dir", "", "src/", "folder",
+                                                                  here / "src")
+        self.assertEqual(seen["label"](dir_row), ("src/", "folder · queued 2 files"))
 
     def test_files_arguments_complete_from_the_current_folder(self):
         self.work_in(self.tmp / "project")

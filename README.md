@@ -83,8 +83,9 @@ attached ~/notes/plan.md (text, 3.1 KB)
   conversation, what is queued, your names, and what is in the current folder, folders first
   (hidden, ignored and dependency files left out). Type to filter; Enter queues a fresh copy of
   the highlighted file (or a named set, or a file from the folder), or unqueues it if it is
-  already queued (a • marks what is). Enter on a folder opens it, and `../` goes back up (no
-  further than where you started). The list stays open so you can pick several, from as many
+  already queued (a • marks what is). Enter on a folder queues every file in it, the way
+  `/files src/**` would, with the same limits; → opens a folder instead, and ← (or Enter on
+  `../`) goes back up, no further than where you started. The list stays open so you can pick several, from as many
   folders as you like; Esc closes it and tells you what is queued. Ctrl-D removes the row after a `y`: a file leaves the
   conversation and stops costing context, a queued file leaves the queue, a name is forgotten.
   Nothing on disk is ever touched. `/files PATH...` queues files for your next message: one path or

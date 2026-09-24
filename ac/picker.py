@@ -41,7 +41,7 @@ class Picker:
     def __init__(self, items, label, *, title="", search=None, key=None, height=10, query="",
                  start=0, current=None, delete=None, protect=None, wording=None,
                  delete_label="delete", toggle=None, toggle_label="toggles", marked=None,
-                 opens=None):
+                 opens=None, back=None):
         """label(item) -> (text, detail). search(query) -> items found some other way (say,
         by message text), matched to `items` by key(item). query pre-fills the filter; start
         is the row the cursor begins on. current is the key of the item in use now: its row
@@ -55,14 +55,17 @@ class Picker:
         toggle(item) makes this a list of things to switch on and off rather than a choice of
         one: Enter calls it and the list stays open, until Esc. It returns a line saying what
         it did; toggle_label says what Enter does in the key hints. marked(item) then decides
-        which rows carry the •, since several can be on at once. opens(item) picks out the rows
-        that Enter chooses even so, closing the list: a folder to go into, say."""
+        which rows carry the •, since several can be on at once.
+
+        opens(item) picks out the rows that → chooses, closing the list: a folder to go into,
+        say. back is the item that ← chooses, from any row: the way back up. Enter on it
+        chooses it too, since there is nothing to toggle about going back."""
         self.items, self.label, self.title = list(items), label, title
         self.search, self.key, self.height = search, key or id, height
         self.current, self.delete, self.protect = current, delete, protect
         self.wording, self.delete_label = wording, delete_label
         self.toggle, self.toggle_label, self.marked = toggle, toggle_label, marked
-        self.opens = opens
+        self.opens, self.back = opens, back
         self.confirming = None      # the item whose deletion is waiting for a "y"
         self.message = ""           # one line about what the last key did
         self.query, self.index, self.top = query, 0, 0
@@ -105,8 +108,13 @@ class Picker:
             else:
                 self.confirming = self.selected
             return None
+        if key == "right" and self.opens and self.matches and self.opens(self.selected):
+            return "accept"
+        if key == "left" and self.back is not None:
+            self.matches, self.index = [self.back], 0   # so that selected is the way back
+            return "accept"
         if key == "enter":
-            if self.opens and self.matches and self.opens(self.selected):
+            if self.back is not None and self.matches and self.key(self.selected) == self.key(self.back):
                 return "accept"
             if self.toggle and self.matches:
                 self.message = self.toggle(self.selected) or ""
@@ -150,7 +158,10 @@ class Picker:
     def lines(self, width):
         width = max(width - 1, 20)
         count = f"{len(self.matches)} of {len(self.items)}" if self.query else f"{len(self.items)}"
-        keys = ("type to filter · ↑↓ · Enter" + f" {self.toggle_label}" * bool(self.toggle)
+        # A list that also opens rows leaves out "type to filter" to fit 80 columns; its › line
+        # shows where typing goes.
+        keys = ("type to filter · " * (not self.opens) + "↑↓ · Enter"
+                + f" {self.toggle_label}" * bool(self.toggle) + " · → opens" * bool(self.opens)
                 + f" · Ctrl-D {self.delete_label}" * bool(self.delete) + " · Esc")
         head = f"{DIM}{_clip(f'{self.title} ({count}) · {keys}', width)}{RESET}"
         if self.confirming is not None:
@@ -190,6 +201,7 @@ class Picker:
 
 
 _ESCAPES = {b"[A": "up", b"OA": "up", b"[B": "down", b"OB": "down",
+            b"[C": "right", b"OC": "right", b"[D": "left", b"OD": "left",
             b"[5~": "pageup", b"[6~": "pagedown", b"[3~": "delete"}
 _CONTROLS = {b"\r": "enter", b"\n": "enter", b"\x7f": "backspace", b"\x08": "backspace",
              b"\x15": "clear", b"\x03": "esc", b"\x04": "ctrl-d", b"\x10": "up", b"\x0e": "down",

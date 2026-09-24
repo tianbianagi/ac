@@ -52,8 +52,8 @@ Skills and prompt
   /context                show token usage and the exact system prompt being sent
   /files                  browse the files in this conversation, what is queued, your names
                           and what is in the current folder: Enter queues a fresh copy or
-                          unqueues it (• = queued), so pick as many as you like, then Esc;
-                          Enter on a folder opens it (../ goes back up); Ctrl-D removes one
+                          unqueues it (• = queued), a whole folder too, so pick as many as you
+                          like, then Esc; → opens a folder, ← goes back up; Ctrl-D removes one
                           (from the conversation, the queue or your names: never from disk)
   /files PATH...          queue files for your next message: one path or several, and spaces
                           in a path need no quotes; Tab completes paths in the current folder
@@ -659,11 +659,15 @@ class Repl:
 
     def _browse_files(self, names):
         """The list view: every file in the conversation, what is queued, the names, and what is
-        in the current folder. Enter queues or unqueues a row and the list stays open, so several
-        can be picked; Enter on a folder goes into it (never above the current folder, with ../
-        to come back up); Esc closes it."""
+        in the current folder. Enter queues or unqueues a row, a whole folder too, and the list
+        stays open, so several can be picked; → goes into a folder and ← back up (never above
+        the current folder; Enter on ../ goes up too); Esc closes it."""
         Row = namedtuple("Row", "kind key title detail item")
         top = Path.cwd().resolve()
+
+        def group(folder):
+            """What a folder's files are queued under, and announced as: src/ for all of src."""
+            return f"{folder.relative_to(top)}/"
 
         def rows_for(folder):
             rows = []
@@ -701,6 +705,8 @@ class Repl:
                 return [a for a in self.queued if a.group == f"@{row.item}"]
             if row.kind == "up":
                 return []
+            if row.kind == "dir":
+                return [a for a in self.queued if a.group == group(row.item)]
             return [a for a in self.queued if a.path == str(row.item)]
 
         def toggle(row):
@@ -714,6 +720,11 @@ class Repl:
             problems = []
             if row.kind == "name":
                 refs = files.named_refs(row.item, self.store.resources(), problems)
+            elif row.kind == "dir":                 # every file in it, the way src/** would
+                ref = files.resolve(os.path.join(row.item, "**"), explicit=True)
+                refs = [ref._replace(label=group(row.item))] if ref else []
+                if not refs:
+                    problems.append(f"nothing in {row.title} to queue")
             else:
                 ref = files.resolve(str(row.item.path if row.kind == "attached" else row.item),
                                     explicit=True)
@@ -740,6 +751,12 @@ class Repl:
             else:
                 self.store.delete_resource(row.item)
 
+        def label(row):
+            if row.kind != "dir":
+                return row.title, row.detail
+            count = len(queued_for(row))
+            return row.title, f"folder · queued {count} file{'s' * (count != 1)}" if count else "folder"
+
         before, folder, start = list(self.queued), top, 0
         while True:
             rows = rows_for(folder)
@@ -747,13 +764,13 @@ class Repl:
                 return self._show_files(names)
             where = "" if folder == top else f" · {folder.relative_to(top)}/"
             chosen = self.picker(
-                rows, lambda r: (r.title, r.detail), title="Files" + where, key=lambda r: r.key,
-                start=start, delete=remove, wording=wording, delete_label="remove",
-                toggle=toggle, toggle_label="(un)queues/opens",
-                marked=lambda r: bool(queued_for(r)), opens=lambda r: r.kind in ("dir", "up"),
+                rows, label, title="Files" + where, key=lambda r: r.key, start=start,
+                delete=remove, wording=wording, delete_label="remove", toggle=toggle,
+                toggle_label="(un)queues", marked=lambda r: bool(queued_for(r)),
+                opens=lambda r: r.kind == "dir", back=rows[0] if rows[0].kind == "up" else None,
                 protect=lambda r: {"here": "not attached: Enter queues it",
-                                   "dir": "a folder: Enter opens it",
-                                   "up": "Enter goes back up"}.get(r.kind))
+                                   "dir": "not attached: Enter queues it all, → opens it",
+                                   "up": "← or Enter goes back up"}.get(r.kind))
             if chosen is None:
                 break
             came, folder = folder, chosen.item
