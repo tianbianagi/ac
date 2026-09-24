@@ -22,6 +22,7 @@ MAX_ATTACHMENTS = 20
 MAX_PDF_IMAGE_PAGES = 8  # a scanned PDF is sent as page images; each costs ~2k tokens
 MAX_PATTERN_FILES = 200
 MAX_PATTERN_MATCHES = 20_000    # stop expanding a pattern like ~/** instead of walking the disk
+MAX_HERE_FILES = 1000           # what /files offers from one folder, at most
 DEFAULT_PATTERN_KB = 400        # roughly 100k tokens; max_attach_kb in config.toml changes it
 JUNK_DIRS = {"node_modules", "__pycache__", "venv", "env", "dist", "build", "target", "vendor",
              "site-packages"}
@@ -200,6 +201,24 @@ def expand(pattern):
     except (OSError, ValueError, re.error):
         return []
     return _drop_git_ignored(sorted(set(matches)))
+
+
+def here(folder=".", limit=MAX_HERE_FILES):
+    """What is directly in a folder and worth offering, as absolute paths, folders first:
+    nothing hidden, no dependency or build folders, nothing git would ignore, and no more
+    than limit."""
+    try:
+        entries = [e for e in os.scandir(Path(folder).resolve()) if not e.name.startswith(".")]
+    except OSError:
+        return []
+    def is_dir(entry):
+        try:
+            return entry.is_dir()
+        except OSError:
+            return False
+    dirs = sorted(Path(e.path) for e in entries if is_dir(e) and e.name not in JUNK_DIRS)
+    found = sorted(Path(e.path) for e in entries if not is_dir(e))
+    return _drop_git_ignored((dirs + found)[:limit])
 
 
 def _drop_git_ignored(paths):

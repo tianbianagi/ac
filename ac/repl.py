@@ -50,11 +50,13 @@ Skills and prompt
   /skills rm NAME         detach a skill
   /system [TEXT|clear]    show, set or clear this session's own system text
   /context                show token usage and the exact system prompt being sent
-  /files                  browse the files in this conversation, what is queued, and your
-                          names: Enter queues a fresh copy, Ctrl-D removes one (from the
-                          conversation, the queue or your names: never from disk)
+  /files                  browse the files in this conversation, what is queued, your names
+                          and what is in the current folder: Enter queues a fresh copy or
+                          unqueues it (• = queued), so pick as many as you like, then Esc;
+                          Enter on a folder opens it (../ goes back up); Ctrl-D removes one
+                          (from the conversation, the queue or your names: never from disk)
   /files PATH...          queue files for your next message: one path or several, and spaces
-                          in a path need no quotes
+                          in a path need no quotes; Tab completes paths in the current folder
   /files PATH... @NAME    name them instead (nothing is queued): @NAME in any message, in any
                           session, then attaches them.  /files ~/my notes/*.md ~/plan.pdf @trip
                           Also: /files @NAME queues a name, /files forget NAME, /files clear
@@ -656,20 +658,71 @@ class Repl:
     cmd_file = cmd_files
 
     def _browse_files(self, names):
-        """The list view: every file in the conversation, what is queued, and the names."""
+        """The list view: every file in the conversation, what is queued, the names, and what is
+        in the current folder. Enter queues or unqueues a row and the list stays open, so several
+        can be picked; Enter on a folder goes into it (never above the current folder, with ../
+        to come back up); Esc closes it."""
         Row = namedtuple("Row", "kind key title detail item")
-        rows = []
-        for m in self.store.messages(self.session.id):
-            for a in m.attachments:
-                rows.append(Row("attached", f"a{a.id}", *self._file_label(a, f"message #{m.seq}"), a))
-        for a in self.queued:
-            rows.append(Row("queued", f"q{id(a)}", *self._file_label(a, "queued"), a))
-        for name, paths in names.items():
-            more = f" +{len(paths) - 1} more" if len(paths) > 1 else ""
-            rows.append(Row("name", f"n{name}", f"@{name}",
-                            f"name · {files.display_path(paths[0])}{more}", name))
-        if not rows:
-            return self._show_files(names)
+        top = Path.cwd().resolve()
+
+        def rows_for(folder):
+            rows = []
+            if folder == top:                   # the conversation's own files, at the top only
+                for m in self.store.messages(self.session.id):
+                    for a in m.attachments:
+                        rows.append(Row("attached", f"a{a.id}",
+                                        *self._file_label(a, f"message #{m.seq}"), a))
+                for a in self.queued:
+                    rows.append(Row("queued", f"q{id(a)}", *self._file_label(a, "queued"), a))
+                for name, paths in self.store.resources().items():
+                    more = f" +{len(paths) - 1} more" if len(paths) > 1 else ""
+                    rows.append(Row("name", f"n{name}", f"@{name}",
+                                    f"name · {files.display_path(paths[0])}{more}", name))
+            else:
+                rows.append(Row("up", "up", "../", "back up", folder.parent))
+            for path in files.here(folder):     # and what is around you, to pick from
+                try:
+                    if path.is_dir():
+                        rows.append(Row("dir", f"h{path}", path.name + "/", "folder", path))
+                    else:
+                        size = files.size_label(path.stat().st_size)
+                        rows.append(Row("here", f"h{path}", path.name, f"file · {size}", path))
+                except OSError:
+                    continue
+            return rows
+
+        def queued_for(row):
+            """What of the queue this row stands for: it is marked, and Enter unqueues it."""
+            if row.kind == "queued":
+                return [a for a in self.queued if a is row.item]
+            if row.kind == "attached":
+                return [a for a in self.queued if (a.path, a.note) == (row.item.path, row.item.note)]
+            if row.kind == "name":
+                return [a for a in self.queued if a.group == f"@{row.item}"]
+            if row.kind == "up":
+                return []
+            return [a for a in self.queued if a.path == str(row.item)]
+
+        def toggle(row):
+            taken = queued_for(row)
+            if taken:
+                self.queued = [a for a in self.queued if not any(a is t for t in taken)]
+                return f"unqueued {row.title}"
+            if row.kind == "queued":            # back in, just as it was
+                self.queued.append(row.item)
+                return f"queued {row.title}"
+            problems = []
+            if row.kind == "name":
+                refs = files.named_refs(row.item, self.store.resources(), problems)
+            else:
+                ref = files.resolve(str(row.item.path if row.kind == "attached" else row.item),
+                                    explicit=True)
+                refs = [ref] if ref else []
+                if not refs:
+                    problems.append(f"{row.title} isn't there now")
+            got, more = files.read_refs(refs, already=self.queued)
+            self.queued += got
+            return "; ".join(files.announce(got, verb="queued") + problems + more)
 
         def wording(row):
             if row.kind == "attached":
@@ -687,14 +740,33 @@ class Repl:
             else:
                 self.store.delete_resource(row.item)
 
-        chosen = self.picker(rows, lambda r: (r.title, r.detail), title="Files",
-                             key=lambda r: r.key, delete=remove, wording=wording,
-                             delete_label="remove")
-        if chosen is None:
-            return self.note("/files PATH... [@NAME] queues files for your next message")
-        if chosen.kind == "queued":
-            return self.note("that is already queued.")
-        return self.cmd_files(chosen.title if chosen.kind == "name" else f'"{chosen.item.path}"')
+        before, folder, start = list(self.queued), top, 0
+        while True:
+            rows = rows_for(folder)
+            if not rows:
+                return self._show_files(names)
+            where = "" if folder == top else f" · {folder.relative_to(top)}/"
+            chosen = self.picker(
+                rows, lambda r: (r.title, r.detail), title="Files" + where, key=lambda r: r.key,
+                start=start, delete=remove, wording=wording, delete_label="remove",
+                toggle=toggle, toggle_label="(un)queues/opens",
+                marked=lambda r: bool(queued_for(r)), opens=lambda r: r.kind in ("dir", "up"),
+                protect=lambda r: {"here": "not attached: Enter queues it",
+                                   "dir": "a folder: Enter opens it",
+                                   "up": "Enter goes back up"}.get(r.kind))
+            if chosen is None:
+                break
+            came, folder = folder, chosen.item
+            start = next((n for n, r in enumerate(rows_for(folder)) if r.item == came), 0)
+        if not self.queued:
+            return self.note("nothing is queued · /files PATH... [@NAME] queues files for your "
+                             "next message")
+        if [id(a) for a in self.queued] == [id(a) for a in before]:
+            self.note("nothing changed.")
+        for line in files.announce(self.queued, verb="queued"):
+            self.note(line)
+        self.note("it goes with your next message" if len(self.queued) == 1
+                  else "they go with your next message")
 
     def _file_label(self, attachment, where):
         path = Path(attachment.path.split("#")[0])
@@ -893,14 +965,18 @@ class Repl:
             commands = [f"/{n}" for n in self.command_names() if f"/{n}".startswith(last)]
             if commands:
                 return commands
-        if last.startswith("@") or (is_command and words[0] in ("/files", "/file") and len(words) == 2
-                                    and not last.startswith(("/", "~", "."))):
+        in_files = is_command and words[0] in ("/files", "/file") and len(words) > 1
+        if in_files and words[1] == "forget" and len(words) == 3:
+            return [n for n in self.store.resources() if n.startswith(last.lstrip("@").lower())]
+        if last.startswith("@") or (in_files and len(words) == 2 and not last.startswith(("/", "~", "."))):
             marker = "@" if last.startswith("@") else ""
             named = [f"{marker}{n}" for n in self.store.resources()
                      if n.startswith(last[len(marker):].lower())]
-            return named + (files.complete(last) if marker else [])
-        if last.startswith(("/", "~", "./", "../")):
-            return files.complete(last)  # a path, in a message or as a command's argument
+            actions = [a for a in ("clear", "forget") if a.startswith(last)] if in_files else []
+            return named + actions + files.complete(last)
+        if last.startswith(("/", "~", "./", "../")) or in_files:
+            return files.complete(last)  # a path, in a message or as a command's argument;
+                                         # /files takes one relative to the current folder too
         if not is_command or len(words) == 1:
             return []
         command, prefix = words[0][1:], words[-1]

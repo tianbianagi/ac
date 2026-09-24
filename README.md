@@ -80,8 +80,12 @@ attached ~/notes/plan.md (text, 3.1 KB)
   left out. What you spell out is taken as meant, so `~/.config/ac/**` works although `.config`
   is hidden. You get one line back, `attached 14 files from src/** (138 KB)`; `/files` lists them.
 - **`/files` and names.** `/files` on its own opens a list, like `/sessions`: every file in the
-  conversation, what is queued, and your names. Type to filter; Enter queues a fresh copy of the
-  highlighted file (or a named set); Ctrl-D removes the row after a `y`: a file leaves the
+  conversation, what is queued, your names, and what is in the current folder, folders first
+  (hidden, ignored and dependency files left out). Type to filter; Enter queues a fresh copy of
+  the highlighted file (or a named set, or a file from the folder), or unqueues it if it is
+  already queued (a • marks what is). Enter on a folder opens it, and `../` goes back up (no
+  further than where you started). The list stays open so you can pick several, from as many
+  folders as you like; Esc closes it and tells you what is queued. Ctrl-D removes the row after a `y`: a file leaves the
   conversation and stops costing context, a queued file leaves the queue, a name is forgotten.
   Nothing on disk is ever touched. `/files PATH...` queues files for your next message: one path or
   several, and a path with spaces needs no quotes, because the longest run of words that names
@@ -93,8 +97,8 @@ attached ~/notes/plan.md (text, 3.1 KB)
   or in `acc ask`, attaches whatever those paths hold at that moment. Only an `@` makes a name; a
   plain last word is just another path. An `@NAME` that isn't last is an existing name, so
   `/files @mom ~/dad/*.md @family` builds one name from another. `/files @mom` queues it,
-  `/files forget mom` removes a name and `/files clear` empties the queue. Names complete with
-  Tab. A name wins over a file of the same name, and if one of its paths has gone you are told
+  `/files forget mom` removes a name and `/files clear` empties the queue. Names, and paths
+  relative to the current folder, complete with Tab. A name wins over a file of the same name, and if one of its paths has gone you are told
   and get the rest.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
   `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary

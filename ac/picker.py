@@ -40,7 +40,8 @@ def _clip(text, width):
 class Picker:
     def __init__(self, items, label, *, title="", search=None, key=None, height=10, query="",
                  start=0, current=None, delete=None, protect=None, wording=None,
-                 delete_label="delete", toggle=None, toggle_label="toggles", marked=None):
+                 delete_label="delete", toggle=None, toggle_label="toggles", marked=None,
+                 opens=None):
         """label(item) -> (text, detail). search(query) -> items found some other way (say,
         by message text), matched to `items` by key(item). query pre-fills the filter; start
         is the row the cursor begins on. current is the key of the item in use now: its row
@@ -54,12 +55,14 @@ class Picker:
         toggle(item) makes this a list of things to switch on and off rather than a choice of
         one: Enter calls it and the list stays open, until Esc. It returns a line saying what
         it did; toggle_label says what Enter does in the key hints. marked(item) then decides
-        which rows carry the •, since several can be on at once."""
+        which rows carry the •, since several can be on at once. opens(item) picks out the rows
+        that Enter chooses even so, closing the list: a folder to go into, say."""
         self.items, self.label, self.title = list(items), label, title
         self.search, self.key, self.height = search, key or id, height
         self.current, self.delete, self.protect = current, delete, protect
         self.wording, self.delete_label = wording, delete_label
         self.toggle, self.toggle_label, self.marked = toggle, toggle_label, marked
+        self.opens = opens
         self.confirming = None      # the item whose deletion is waiting for a "y"
         self.message = ""           # one line about what the last key did
         self.query, self.index, self.top = query, 0, 0
@@ -103,6 +106,8 @@ class Picker:
                 self.confirming = self.selected
             return None
         if key == "enter":
+            if self.opens and self.matches and self.opens(self.selected):
+                return "accept"
             if self.toggle and self.matches:
                 self.message = self.toggle(self.selected) or ""
                 return None

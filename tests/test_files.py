@@ -98,6 +98,15 @@ class FilesTest(unittest.TestCase):
         lookalike = files.Attachment(str(Path.home()) + "-other/a.md", "text", content="")
         self.assertTrue(files.describe(lookalike).startswith(str(Path.home()) + "-other"))
 
+    def test_here_lists_one_folder_folders_first(self):
+        listed = [p.name for p in files.here()]
+        self.assertEqual(listed[0], "sub")      # folders first, and nothing from inside them
+        self.assertIn("notes.md", listed)
+        self.assertNotIn("deep.py", listed)
+        self.assertFalse(any(name.startswith(".") for name in listed))
+        self.assertEqual([p.name for p in files.here("sub")], ["deep.py"])
+        self.assertEqual(len(files.here(limit=1)), 1)
+
     def test_complete(self):
         self.assertEqual(files.complete("./no"), ["./notes.md"])
         self.assertEqual(files.complete("@no"), ["@notes.md"])

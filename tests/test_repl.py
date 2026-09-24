@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import unittest
+from collections import namedtuple
 from contextlib import redirect_stderr
 from datetime import datetime
 from pathlib import Path
@@ -543,8 +544,16 @@ class ReplTest(unittest.TestCase):
         self.run_lines("/file clear")  # the singular works, as /session and /model do
         self.assertEqual(self.repl.queued, [])
 
-    def browse(self, act):
-        """Run /files with a stand-in picker: act(rows, options) returns the chosen row."""
+    def work_in(self, folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        cwd = os.getcwd()
+        os.chdir(folder)
+        self.addCleanup(os.chdir, cwd)
+
+    def browse(self, act, here=None):
+        """Run /files with a stand-in picker, from the folder here (an empty one by default):
+        act(rows, options) returns the chosen row."""
+        self.work_in(here or self.tmp / "empty")
         seen = {}
 
         def picker(rows, label, **options):
@@ -606,20 +615,102 @@ class ReplTest(unittest.TestCase):
         folder = self.vault()
         self.run_lines(f'read "{folder}/visit.md"')
         (folder / "visit.md").write_text("visit moved to monday")
-        out, _ = self.browse(lambda rows, options: rows[0])
-        self.assertIn(f"queued {folder}/visit.md (text, 21 B)", out)
+        self.browse(lambda rows, options: options["toggle"](rows[0]) and None)
+        self.assertEqual(self.repl.queued[0].path, str(folder / "visit.md"))
         self.assertEqual(self.repl.queued[0].content, "visit moved to monday")
 
         self.repl.picker = None
         self.run_lines("/files clear", f"/files {folder}/*.md @mom", "/files clear")
-        out, _ = self.browse(lambda rows, options: next(r for r in rows if r.kind == "name"))
+        out, _ = self.browse(lambda rows, options: options["toggle"](
+            next(r for r in rows if r.kind == "name")) and None)
         self.assertIn("queued 2 files from @mom", out)
-        out, _ = self.browse(lambda rows, options: next(r for r in rows if r.kind == "queued"))
-        self.assertIn("that is already queued", out)
+
+    def test_enter_picks_several_and_unqueues_what_is_marked(self):
+        folder = self.vault()
+        self.repl.picker = None
+        self.run_lines(f"/files {folder}/*.md @mom")
+        said = []
+
+        def act(rows, options):
+            name = next(r for r in rows if r.kind == "name")
+            self.assertFalse(options["marked"](name))
+            said.append(options["toggle"](name))
+            self.assertTrue(options["marked"](name))
+            said.append(options["toggle"](name))       # Enter again takes it back out
+            self.assertFalse(options["marked"](name))
+            said.append(options["toggle"](name))
+            self.assertEqual(options["toggle_label"], "(un)queues/opens")
+
+        out, _ = self.browse(act)
+        self.assertEqual(said, ["queued 2 files from @mom (24 B)", "unqueued @mom",
+                                "queued 2 files from @mom (24 B)"])
+        self.assertEqual(sorted(Path(a.path).name for a in self.repl.queued),
+                         ["recipe.md", "visit.md"])
+        self.assertIn("they go with your next message", out)
+
+        def unqueue_one(rows, options):
+            options["toggle"](next(r for r in rows if r.kind == "queued"))
+
+        out, _ = self.browse(unqueue_one)
+        self.assertEqual(len(self.repl.queued), 1)
+        self.assertIn("it goes with your next message", out)
+        out, _ = self.browse(lambda rows, options: None)
+        self.assertIn("nothing changed", out)
 
     def test_files_with_nothing_to_show_just_explains(self):
+        self.work_in(self.tmp / "empty")
         self.repl.picker = lambda *a, **k: self.fail("there is nothing to list")
         self.assertIn("no files yet", self.run_lines("/files"))
+
+    def test_files_offers_one_folder_at_a_time(self):
+        here = self.tmp / "project"
+        (here / "src" / "lib").mkdir(parents=True)
+        (here / "src" / "main.py").write_text("print('hi')")
+        (here / "notes.md").write_text("todo")
+        (here / ".secret").write_text("no")
+        (here / "node_modules").mkdir()
+        (here / "node_modules" / "dep.js").write_text("no")
+        seen = []
+
+        def act(rows, options):
+            seen.append(([(r.kind, r.title) for r in rows], options))
+            step = len(seen)
+            if step == 1:                       # the top: pick a file, then go into src/
+                notes = next(r for r in rows if r.title == "notes.md")
+                self.assertEqual(options["toggle"](notes), f"queued {here}/notes.md (text, 4 B)")
+                return next(r for r in rows if r.title == "src/")
+            if step == 2:                       # inside src/: pick one more, then back up
+                options["toggle"](next(r for r in rows if r.title == "main.py"))
+                return rows[0]
+            return None                         # back at the top: done
+
+        out, _ = self.browse(act, here=here)
+        top, inside, back = seen
+        self.assertEqual(top[0], [("dir", "src/"), ("here", "notes.md")])
+        self.assertEqual(inside[0], [("up", "../"), ("dir", "lib/"), ("here", "main.py")])
+        self.assertEqual((top[1]["title"], inside[1]["title"]), ("Files", "Files · src/"))
+        row = namedtuple("Row", "kind")
+        self.assertTrue(top[1]["opens"](row("dir")))
+        self.assertFalse(top[1]["opens"](row("here")))  # a file is queued, the list stays open
+        self.assertEqual(top[1]["protect"](row("here")), "not attached: Enter queues it")
+        self.assertEqual(back[0], [("queued", "notes.md"), ("queued", "main.py"), ("dir", "src/"),
+                                   ("here", "notes.md")])
+        self.assertEqual(back[1]["start"], 2)   # the cursor comes back to src/
+        self.assertEqual([a.content for a in self.repl.queued], ["todo", "print('hi')"])
+        self.assertIn("they go with your next message", out)
+
+    def test_files_arguments_complete_from_the_current_folder(self):
+        self.work_in(self.tmp / "project")
+        Path("notes.md").write_text("todo")
+        Path("src").mkdir()
+        Path("src/main.py").write_text("")
+        self.store.set_resource("nora", ["/x/nora.md"])
+        self.assertEqual(self.repl.completions("/files no"), ["nora", "notes.md"])
+        self.assertEqual(self.repl.completions("/files notes.md s"), ["src/"])
+        self.assertEqual(self.repl.completions("/files src/ma"), ["src/main.py"])
+        self.assertEqual(self.repl.completions("/files cl"), ["clear"])
+        self.assertEqual(self.repl.completions("/files forget n"), ["nora"])
+        self.assertEqual(self.repl.completions("tell me about no"), [])  # a message needs a ./ or @
 
     def test_names_complete(self):
         self.store.set_resource("mom", ["/x/mom/*.md"])

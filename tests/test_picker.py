@@ -180,6 +180,15 @@ class PickerTest(unittest.TestCase):
         self.assertEqual(on, {"id01"})
         self.assertEqual(self.keys("esc"), "cancel")
 
+    def test_in_a_toggle_list_some_rows_open_instead(self):
+        on = set()
+        self.picker = Picker(self.items, label, key=lambda s: s.id,
+                             toggle=lambda s: on.add(s.id), marked=lambda s: s.id in on,
+                             opens=lambda s: s.id == "id02")
+        self.assertIsNone(self.keys("enter"))           # an ordinary row toggles
+        self.assertEqual(self.keys("down", "enter"), "accept")  # this one closes the list
+        self.assertEqual((self.picker.selected.id, on), ("id02", {"id01"}))
+
     def test_nothing_matches(self):
         self.keys(*"zzz")
         self.assertIsNone(self.picker.selected)
