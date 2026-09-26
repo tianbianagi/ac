@@ -35,7 +35,8 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/show":
             if payload["model"] not in fake.models:
                 return self._send_json({"error": f"model '{payload['model']}' not found"}, 404)
-            return self._send_json({"capabilities": fake.capabilities})
+            return self._send_json({"capabilities": fake.capabilities, "parameters": fake.parameters,
+                                    "model_info": {"test.context_length": fake.max_context}})
         if self.path != "/api/chat":
             return self._send_json({"error": "not found"}, 404)
         fake.requests.append(payload)
@@ -73,6 +74,8 @@ class FakeOllama:
         self.loaded = list(models)  # what /api/ps reports as resident in memory
         self.capabilities = list(capabilities)
         self.context_length = 1000
+        self.max_context = 8192     # what /api/show gives as the most the model takes
+        self.parameters = ""        # the Modelfile's PARAMETER lines, as /api/show gives them
         self.prompt_tokens = 11
         self.scripts = []
         self.requests = []

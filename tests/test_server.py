@@ -140,7 +140,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(events[2]["text"], "skill 'concise' can't be loaded; continuing without it")
         self.assertEqual(events[1]["message"]["content"], "And then?")
         self.assertEqual(events[-2]["message"]["content"], "Day 2: Belém")
-        self.assertEqual(events[-1], {"type": "done", "used": 18, "context": 1000})
+        self.assertEqual(events[-1], {"type": "done", "used": 18, "context": 1000, "exact": True,
+                                      "speed": 7.0})
         stored = self.store.messages(self.lisbon.id)
         self.assertEqual([(m.role, m.content, m.status) for m in stored[2:]],
                          [("user", "And then?", "complete"),
@@ -510,6 +511,31 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.store.get(self.lisbon.id).updated_at, before)
         _, body = self.post(f"/api/sessions/{self.lisbon.id}", {"archived": False})
         self.assertIsNone(body["session"]["archived_at"])
+
+
+    def test_a_session_says_how_much_context_it_uses(self):
+        _, body = self.get(f"/api/sessions/{self.soup.id}")
+        self.assertEqual(body["usage"], {"used": None, "context": 1000, "exact": True})  # no reply yet
+        self.fake.reply("Leeks.")
+        self.post("/api/chat", {"session": self.soup.id, "text": "Recipe?"})
+        _, body = self.get(f"/api/sessions/{self.soup.id}")
+        self.assertEqual(body["usage"], {"used": 18, "context": 1000, "exact": True})
+
+    def test_the_window_of_a_model_not_loaded_is_a_best_guess(self):
+        self.fake.reply("Leeks.")
+        self.post("/api/chat", {"session": self.soup.id, "text": "Recipe?"})
+        self.fake.loaded = []                                   # Ollama has let it go
+        usage = lambda: self.get(f"/api/sessions/{self.soup.id}")[1]["usage"]
+        self.assertEqual(usage(), {"used": 18, "context": 8192, "exact": False})   # the model's most
+        # A fresh server, so nothing is remembered: the Modelfile's num_ctx comes first...
+        self.fake.parameters = "temperature                    1\nnum_ctx                        4096"
+        self.assertEqual(server.usage(Client(self.fake.host), self.store.get(self.soup.id),
+                                      self.store.messages(self.soup.id))["context"], 4096)
+        # ...and the session's own num_ctx before that.
+        soup = self.store.get(self.soup.id)
+        soup.options["num_ctx"] = 2048
+        self.store.save(soup)
+        self.assertEqual(usage()["context"], 2048)
 
 
 if __name__ == "__main__":

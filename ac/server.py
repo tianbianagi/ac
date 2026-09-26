@@ -50,6 +50,16 @@ class BadRequest(Exception):
     pass
 
 
+def usage(client, session, messages):
+    """Context in use as the latest reply left it: {"used": tokens, "context": the model's
+    window, "exact": whether that is Ollama's figure for the loaded model or a best guess}."""
+    context, exact = client.context_window(session.model, session.options)
+    for m in reversed(messages):
+        if m.role == "assistant" and m.prompt_tokens is not None:
+            return {"used": m.prompt_tokens + (m.eval_tokens or 0), "context": context, "exact": exact}
+    return {"used": None, "context": context, "exact": exact}
+
+
 def read_uploads(uploads):
     """Attachments for files the page sent as {"name", "data" (base64)}, plus lines the user
     should see. Each is read as the same file on disk would be, so a PDF gives its text (or
@@ -280,8 +290,10 @@ def chat(store, client, request):
         used = None
         if stats.get("prompt_eval_count") is not None:
             used = stats["prompt_eval_count"] + stats.get("eval_count", 0)
-        yield {"type": "done", "used": used,
-               "context": client.context_length(session.model)}
+        eval_ns, eval_count = stats.get("eval_duration"), stats.get("eval_count")
+        context, exact = client.context_window(session.model, session.options)
+        yield {"type": "done", "used": used, "context": context, "exact": exact,
+               "speed": round(eval_count / (eval_ns / 1e9), 1) if eval_ns and eval_count else None}
 
 
 def export(store, client, session, request):
@@ -483,8 +495,10 @@ class Handler(BaseHTTPRequestHandler):
                 "archived_count": store.archived_count()})
         if path.startswith("/sessions/"):
             session = store.get(unquote(path[len("/sessions/"):]))
+            messages = store.messages(session.id)
             return self._json({"session": session_json(session),
-                               "messages": [message_json(m) for m in store.messages(session.id)]})
+                               "messages": [message_json(m) for m in messages],
+                               "usage": usage(self.client, session, messages)})
         if path == "/config":
             return self._json({"names": config.speaker_names()})
         if path == "/models":

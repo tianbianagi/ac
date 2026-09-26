@@ -8,14 +8,14 @@
 <style>
 :root {
   --bg: #fbfaf8; --panel: #f3f1ed; --text: #1f1d1a; --muted: #6f6a62; --line: #e2ded6;
-  --accent: #c8651b; --accent-soft: #f6e4d4; --user: #ecebe7; --code: #f0eee9; --warn: #a33b2b;
+  --accent: #c8651b; --accent-soft: #f6e4d4; --user: #ecebe7; --code: #f0eee9; --warn: #a33b2b; --amber: #a86a12;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #1b1a18; --panel: #232220; --text: #ebe8e2; --muted: #9c968c; --line: #34322e;
-    --accent: #e08a45; --accent-soft: #3a2a1d; --user: #2b2a27; --code: #262522; --warn: #e07a66;
+    --accent: #e08a45; --accent-soft: #3a2a1d; --user: #2b2a27; --code: #262522; --warn: #e07a66; --amber: #e0a64a;
   }
 }
 * { box-sizing: border-box; }
@@ -138,6 +138,13 @@ select.btn { padding-right: 8px; max-width: 100%; }
          font: inherit; line-height: 1.45; }
 #input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 #composer .btn { padding: 10px 16px; font-size: 14px; }
+.status-line { max-width: 780px; margin: 6px auto 0; font-size: 12px; color: var(--muted);
+               font-variant-numeric: tabular-nums; min-height: 1.4em; }
+.status-line .meter { display: inline-block; width: 48px; height: 5px; border-radius: 3px; background: var(--line);
+                      vertical-align: middle; margin: 0 6px 1px 0; overflow: hidden; }
+.status-line .meter i { display: block; height: 100%; background: var(--muted); }
+.status-line.full-ish .usage { color: var(--amber); } .status-line.full-ish .meter i { background: var(--amber); }
+.status-line.full .usage { color: var(--warn); } .status-line.full .meter i { background: var(--warn); }
 #composer .btn.attach { padding: 0; width: 44px; height: 44px; display: inline-flex; align-items: center;
                         justify-content: center; color: var(--muted); flex: none; }
 #composer .btn.attach:hover { color: var(--accent); }
@@ -286,6 +293,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
       <button id="go" class="btn primary" type="submit">Send</button>
     </form>
+    <div id="status" class="status-line" aria-live="polite"></div>
   </div>
 </main>
 <div id="picker" hidden>
@@ -1050,14 +1058,18 @@ async function openSession(id) {
   if (!id || id === "new") {
     current = null;
     showHeader(null);
+    Object.assign(stats, { usage: null, speed: null, live: null });
+    showStatus();
     chat().replaceChildren(el("p", { class: "placeholder" }, "Start a new conversation."));
     $("#input").focus();
     return;
   }
   try {
-    const { session, messages } = await api("/sessions/" + encodeURIComponent(id));
+    const { session, messages, usage } = await api("/sessions/" + encodeURIComponent(id));
     if (current !== id) return;
     showHeader(session);
+    Object.assign(stats, { usage, speed: null, live: null });
+    showStatus();
     chat().replaceChildren(...(messages.length ? messages.map(renderMessage)
                                                : [el("p", { class: "placeholder" }, "No messages yet.")]));
     offerRetry(messages);
@@ -1072,6 +1084,54 @@ async function openSession(id) {
 function scrollDown(force) {
   const box = $("#chat");
   if (force || box.scrollHeight - box.scrollTop - box.clientHeight < 120) box.scrollTop = box.scrollHeight;
+}
+
+// -- context and speed ----------------------------------------------------------------------------
+
+// What the line under the message box shows: context in use as the latest reply left it, and
+// how fast replies come. While one streams, its speed is counted live (a chunk is a token).
+const stats = { usage: null, speed: null, live: null };
+
+function tokens(n) {
+  return n < 1000 ? String(n) : n < 10000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : Math.round(n / 1000) + "k";
+}
+
+function showStatus() {
+  const line = $("#status");
+  line.classList.remove("full-ish", "full");
+  if (!session && !stats.live) { line.replaceChildren(); return; }
+  const parts = [];
+  const u = stats.usage;
+  if (u && u.used != null) {
+    if (u.context) {
+      const share = u.used / u.context;
+      line.classList.add(share >= 0.95 ? "full" : share >= 0.8 ? "full-ish" : "ok");
+      const about = u.exact ? "" : "~";
+      const title = `${u.used.toLocaleString()} of ${about}${u.context.toLocaleString()} tokens` + (u.exact ? ""
+        : ". The model isn't loaded, so its window is taken from its settings; it is exact once the model is loaded");
+      const meter = el("span", { class: "meter" }, el("i"));
+      meter.firstChild.style.width = Math.min(100, share * 100).toFixed(1) + "%";
+      parts.push(el("span", { class: "usage", title }, meter,
+        `${tokens(u.used)} / ${about}${tokens(u.context)} context (${Math.round(share * 100)}%)` +
+        (share >= 0.95 ? " · nearly full: Ollama drops the oldest messages" : "")));
+    } else {
+      parts.push(el("span", { class: "usage", title: "The model isn't loaded, so its context window isn't known" },
+                    `${tokens(u.used)} tokens of context`));
+    }
+  }
+  const speed = stats.live ? stats.live.rate : stats.speed;
+  if (speed) parts.push(`${Math.round(speed)} tok/s${stats.live ? " …" : ""}`);
+  line.replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
+}
+
+let tickDrawn = 0;
+function tick() {
+  const now = performance.now();
+  if (!stats.live) stats.live = { start: now, count: 0, rate: null };
+  stats.live.count++;
+  const seconds = (now - stats.live.start) / 1000;
+  if (stats.live.count > 3 && seconds > 0.3) stats.live.rate = (stats.live.count - 1) / seconds;
+  if (now - tickDrawn > 250) { tickDrawn = now; showStatus(); }
 }
 
 // -- sending --------------------------------------------------------------------------------
@@ -1167,6 +1227,7 @@ async function send(request) {
         } else if (event.type === "thinking" || event.type === "content") {
           if (!reply) { reply = pendingReply(); chat().append(reply.node); }
           reply.add(event.type, event.text);
+          tick();
         } else if (event.type === "message") {
           const done = renderMessage(event.message);
           if (reply) reply.node.replaceWith(done); else chat().append(done);
@@ -1176,8 +1237,11 @@ async function send(request) {
           failed = true;
           error = event.text;
           note(event.text, "error");
-        } else if (event.type === "done" && event.used && event.context) {
-          $("#meta").textContent += ` · ${event.used.toLocaleString()} / ${event.context.toLocaleString()} tokens`;
+        } else if (event.type === "done") {
+          stats.usage = { used: event.used, context: event.context, exact: event.exact };
+          stats.speed = event.speed;         // Ollama's own figure replaces the live estimate
+          stats.live = null;
+          showStatus();
         }
       }
     }
@@ -1185,6 +1249,11 @@ async function send(request) {
     if (e.name !== "AbortError") { failed = true; error = e.message; note(e.message, "error"); }
   } finally {
     setStreaming(null);
+    if (stats.live) {                        // stopped or failed: the count so far is the speed
+      stats.speed = stats.live.rate;
+      stats.live = null;
+      showStatus();
+    }
   }
   if (early) early.remove();                 // it never arrived; the text goes back in the box
   if (!sent && request.text !== undefined) {

@@ -19,6 +19,7 @@ class Client:
     def __init__(self, host=None):
         self.host = host or config.ollama_host()
         self._capabilities = {}
+        self._shown = {}
 
     def _open(self, path, payload=None, timeout=10):
         data = json.dumps(payload).encode() if payload is not None else None
@@ -63,6 +64,34 @@ class Client:
             except OllamaError:
                 return False
         return capability in self._capabilities[model]
+
+    def _details(self, model):
+        """What /api/show says about a model, asked once per model."""
+        if model not in self._shown:
+            self._shown[model] = self.show(model)
+        return self._shown[model]
+
+    def context_window(self, model, options=None):
+        """(tokens, exact) for the window a model runs with. Exact is Ollama's own figure for a
+        loaded model; otherwise the best guess: the session's num_ctx, the Modelfile's, then
+        the most the model takes. (None, False) when none of these can be had."""
+        loaded = self.context_length(model)
+        if loaded:
+            return loaded, True
+        if (options or {}).get("num_ctx"):
+            return int(options["num_ctx"]), False
+        try:
+            details = self._details(model)
+        except OllamaError:
+            return None, False
+        for line in (details.get("parameters") or "").splitlines():
+            key, _, value = line.partition(" ")
+            if key == "num_ctx" and value.strip().isdigit():
+                return int(value.strip()), False
+        for key, value in (details.get("model_info") or {}).items():
+            if key.endswith(".context_length") and isinstance(value, int):
+                return value, False
+        return None, False
 
     def context_length(self, model):
         """Effective context window of a loaded model, or None if it can't be determined."""
