@@ -31,6 +31,7 @@ class PatternTest(unittest.TestCase):
         config = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "no-config")})
         config.start()
         self.addCleanup(config.stop)
+        os.environ.pop("AC_CONFIG_DIR", None)
 
     def write(self, name, content):
         path = self.root / name

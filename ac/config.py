@@ -23,16 +23,23 @@ def db_path():
     return _xdg("XDG_DATA_HOME", ".local/share") / "ac.db"
 
 
+def config_dir():
+    override = os.environ.get("AC_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    return _xdg("XDG_CONFIG_HOME", ".config")
+
+
 def skills_dirs():
     """Skill search path: AC_SKILLS_PATH entries first, then the user library."""
     extra = os.environ.get("AC_SKILLS_PATH", "")
     dirs = [Path(p).expanduser() for p in extra.split(os.pathsep) if p]
-    dirs.append(_xdg("XDG_CONFIG_HOME", ".config") / "skills")
+    dirs.append(config_dir() / "skills")
     return dirs
 
 
 def config_path():
-    return _xdg("XDG_CONFIG_HOME", ".config") / "config.toml"
+    return config_dir() / "config.toml"
 
 
 def settings():

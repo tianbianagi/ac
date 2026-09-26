@@ -33,6 +33,7 @@ class CliTest(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("AC_MODEL", None)
         os.environ.pop("AC_EXPORT_DIR", None)
+        os.environ.pop("AC_CONFIG_DIR", None)
 
     def ac(self, *argv, stdin=""):
         out, err = io.StringIO(), io.StringIO()
@@ -207,6 +208,14 @@ class CliTest(unittest.TestCase):
         self.assertIn("Haiku only.", out)
         _, out, _ = self.ac("models")
         self.assertRegex(out, r"m2:latest\s+1B\s+Q4\s+0\.0 GB\s+completion, thinking")
+
+    def test_config_dir_can_be_moved(self):
+        moved = self.tmp / "elsewhere"
+        write_skill(moved / "skills", "haiku", description="Poetry mode")
+        with mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(moved)}):
+            self.assertEqual(config.config_path(), moved / "config.toml")
+            _, out, _ = self.ac("skills")
+        self.assertRegex(out, r"haiku\s+Poetry mode")
 
     def test_interactive_new_with_piped_input(self):
         self.fake.reply("Hello!")

@@ -82,6 +82,7 @@ class ReplTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_EXPORT_DIR", None)
+        os.environ.pop("AC_CONFIG_DIR", None)
         self.store = Store(":memory:")
         self.addCleanup(self.store.close)
         self.out = io.StringIO()
@@ -133,6 +134,20 @@ class ReplTest(unittest.TestCase):
         self.run_lines('"""first', "second", 'third"""', '"""one liner"""', "//etc/hosts is a file")
         self.assertEqual([c for r, c in self.contents() if r == "user"],
                          ["first\nsecond\nthird", "one liner", "/etc/hosts is a file"])
+
+    def test_trailing_backslash_continues_the_line(self):
+        self.run_lines("first\\", "\\", "second\\", "third", "single")
+        self.assertEqual([c for r, c in self.contents() if r == "user"],
+                         ["first\n\nsecond\nthird", "single"])
+
+    def test_pasted_lines_are_one_message(self):
+        # A paste arrives at once: lines still waiting after one is read belong to it.
+        # waiting[i]: whether the line after the i-th one read came with it.
+        waiting = [True, True, False, False, False, True, False]
+        self.repl.pasting = lambda: waiting.pop(0)
+        self.run_lines("pasted", "", "block", "typed", '"""open', "pasted", 'inside"""')
+        self.assertEqual([c for r, c in self.contents() if r == "user"],
+                         ["pasted\n\nblock", "typed", "open\npasted\ninside"])
 
     def test_every_alias_is_listed_in_help_and_nowhere_else(self):
         aliases = {n[4:] for n in dir(Repl) if n.startswith("cmd_")} - set(Repl.command_names())

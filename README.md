@@ -52,7 +52,8 @@ new one with no messages yet is shown first, though it is only saved with its fi
 `/skills` opens the same kind of list, except that several
 skills can be on at once: Enter attaches the highlighted skill or detaches it, a `•` marks the
 attached ones, and the list stays open until Esc. `/skills NAME` (or a path) attaches one straight
-away and `/skills rm NAME` detaches it. Wrap multi-line input in `"""`. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
+away and `/skills rm NAME` detaches it. For multi-line input, end a line with `\\` to carry on to the next, or wrap the text in `"""`;
+a pasted block stays one message, line breaks and all. Ctrl-C stops a reply and keeps the partial text; Ctrl-D quits.
 
 ## Files
 
@@ -218,6 +219,7 @@ are dropped, and if another session already owns the name, the session id is app
 | `AC_MARKDOWN` | `0` shows replies as raw markdown; overrides `markdown` in `config.toml` | rendered |
 | `AC_STATUS_BAR` | `0` prints a status line after each reply instead of the bar; overrides `status_bar` in `config.toml` | bar |
 | `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
+| `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/.config/ac` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |
 | `AC_DEBUG=1` | print each request payload to stderr | |

@@ -5,6 +5,7 @@ import base64
 import difflib
 import json
 import os
+import select
 import shlex
 import subprocess
 import sys
@@ -78,7 +79,8 @@ Files: name a path in your message (/abs, ~/home, ./relative, or @name for a bar
 its contents are sent along: text files, PDFs (report.pdf#10-20 picks pages), images (for
 models with vision) and directory listings. A * makes it a pattern: src/** sends every file
 under src, docs/**/*.md only the markdown (hidden, ignored and binary files are left out).
-Input: wrap multi-line text in \"\"\" ... \"\"\". Start a message with // to send a leading /.
+Input: end a line with \\ to go on to the next, or wrap multi-line text in \"\"\" ... \"\"\";
+pasted lines stay together. Start a message with // to send a leading /.
 Ctrl-C stops a reply (the partial text is kept); Ctrl-D quits."""
 
 
@@ -123,6 +125,7 @@ class Repl:
         self.out = out or sys.stdout
         self.log = log or self.out  # notes, warnings and errors; stderr for one-shot use
         self.input_fn, self.editor, self.quiet = input_fn, editor, quiet
+        self.pasting = lambda: False  # is more input already waiting? set for a terminal
         self.style = style or render.Style(render.use_color(self.log))
         self.markdown = config.markdown()  # only takes effect where the output is a terminal
         self.picker = None          # picker.pick, when there is a real terminal to run it on
@@ -173,19 +176,29 @@ class Repl:
     # -- input ------------------------------------------------------------
 
     def read(self):
-        line = self.input_fn(">>> ")
-        if not line.lstrip().startswith('"""'):
-            return line.strip()
-        first = line.lstrip()[3:]
+        text = self.read_line(">>> ")
+        if not text.lstrip().startswith('"""'):
+            while text.endswith("\\"):         # a trailing backslash carries on to the next line
+                text = text[:-1] + "\n" + self.read_line("... ")
+            return text.strip()
+        first = text.lstrip()[3:]
         if first.rstrip().endswith('"""'):
             return first.rstrip()[:-3].strip()
         lines = [first]
         while True:
-            line = self.input_fn("... ")
+            line = self.read_line("... ")
             if line.rstrip().endswith('"""'):
                 lines.append(line.rstrip()[:-3])
                 return "\n".join(lines).strip()
             lines.append(line)
+
+    def read_line(self, prompt):
+        """One line as typed, or all of a paste: a paste arrives at once, so lines that are
+        already waiting when one has been read were pasted along with it."""
+        lines = [self.input_fn(prompt)]
+        while self.pasting():
+            lines.append(self.input_fn("... "))
+        return "\n".join(lines)
 
     def run(self):
         if self.bar is not None:
@@ -1049,7 +1062,9 @@ class _Progress:
 
 
 def setup_readline(repl):
-    """Line editing, persistent input history and tab completion for an interactive REPL."""
+    """Line editing, persistent input history, tab completion and paste detection for an
+    interactive REPL."""
+    repl.pasting = lambda: bool(select.select([sys.stdin], [], [], 0.02)[0])
     try:
         import readline
     except ImportError:
