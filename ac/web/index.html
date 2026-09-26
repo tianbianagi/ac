@@ -48,7 +48,35 @@ button { font: inherit; cursor: pointer; }
 
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 #main > header { padding: 14px 24px; border-bottom: 1px solid var(--line); }
-#main > header h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+#main > header h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; min-width: 0; }
+.title-row { display: flex; align-items: center; gap: 4px; }
+.title-row h2:has(#title-edit) { flex: 1; }
+.rename { flex: none; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+          border: 0; border-radius: 6px; background: none; color: var(--muted); }
+.rename:hover { background: var(--panel); color: var(--accent); }
+.rename svg { width: 15px; height: 15px; }
+.rename[hidden] { display: none; }
+#sidebar footer { display: flex; justify-content: flex-end; padding: 8px; }
+.edge { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+        border: 0; border-radius: 8px; background: none; color: var(--muted); }
+.edge:hover { background: var(--user); color: var(--accent); }
+.edge svg { width: 18px; height: 18px; }
+.rail { display: none; flex-direction: column; align-items: center; gap: 10px; padding: 14px 0; flex: 1; }
+.rail-new { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center;
+            border: 0; border-radius: 14px; background: var(--accent-soft); color: var(--accent); }
+.rail-new:hover, .new-chat:hover { filter: brightness(.96); }
+.new-chat { width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+            border: 0; border-radius: 10px; background: var(--accent-soft); color: var(--accent); }
+.new-chat svg { width: 17px; height: 17px; }
+.new-chat:disabled { opacity: .5; cursor: default; }
+.rail-new svg { width: 20px; height: 20px; }
+#sidebar-toggle svg { transition: transform .15s; }
+/* Collapsed, the list keeps a narrow rail: new chat, search, and the way back out. */
+body.sidebar-collapsed #sidebar { width: 64px; }
+body.sidebar-collapsed #sidebar header, body.sidebar-collapsed #sessions { display: none; }
+body.sidebar-collapsed .rail { display: flex; }
+body.sidebar-collapsed #sidebar footer { justify-content: center; }
+body.sidebar-collapsed #sidebar-toggle svg { transform: rotate(180deg); }
 #main > header .meta { font-size: 13px; color: var(--muted); }
 #back { display: none; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; position: relative; }
@@ -70,6 +98,11 @@ select.btn { padding-right: 8px; max-width: 100%; }
 .controls .spacer { flex: 1; }
 .controls .confirm { font-size: 13px; color: var(--warn); align-self: center; }
 .btn.danger { color: var(--warn); }
+.btn.icon { width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+            color: var(--muted); vertical-align: middle; }
+.btn.icon:hover { color: var(--accent); }
+.btn.icon.danger:hover { color: var(--warn); border-color: var(--warn); }
+.btn.icon svg { width: 17px; height: 17px; }
 .btn.danger.primary { background: var(--warn); border-color: var(--warn); color: #fff; }
 #title-edit { width: 100%; font: 600 17px var(--sans); padding: 2px 6px; border: 1px solid var(--accent);
               border-radius: 6px; background: var(--bg); color: var(--text); }
@@ -170,6 +203,11 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
   #main { display: none; }
   body.reading #sidebar { display: none; }
   body.reading #main { display: flex; }
+  #sidebar footer { display: none; }   /* one pane at a time here anyway: no rail */
+  body.sidebar-collapsed #sidebar { width: 100%; }
+  body.sidebar-collapsed #sidebar header { display: block; }
+  body.sidebar-collapsed #sessions { display: block; }
+  body.sidebar-collapsed .rail { display: none; }
   #back { display: inline; background: none; border: 0; color: var(--accent); font: inherit;
           padding: 0; margin-bottom: 4px; cursor: pointer; }
   #main > header, #chat, #composer { padding-left: 16px; padding-right: 16px; }
@@ -179,15 +217,26 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
 <body>
 <nav id="sidebar">
   <header>
-    <div class="top"><h1>acc</h1><button id="new" class="btn" type="button">New chat</button></div>
+    <div class="top"><h1>acc</h1><button id="new" class="new-chat" type="button" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
     <input id="search" type="search" placeholder="Search sessions" autocomplete="off">
   </header>
   <ul id="sessions"></ul>
+  <div class="rail">
+    <button id="rail-new" class="rail-new" type="button" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button>
+    <button id="rail-search" class="edge" type="button" title="Search sessions" aria-label="Search sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
+  </div>
+  <footer>
+    <button id="sidebar-toggle" class="edge" type="button" aria-controls="sidebar" aria-expanded="true"
+            title="Collapse sessions (⌘B / Ctrl+B)" aria-label="Collapse sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+  </footer>
 </nav>
 <main id="main">
   <header>
     <button id="back" type="button">‹ Sessions</button>
-    <h2 id="title"></h2>
+    <div class="title-row">
+      <h2 id="title"></h2>
+      <button id="rename-btn" class="rename" type="button" title="Rename" aria-label="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M17.5 2.5a2.1 2.1 0 0 1 3 3L12 14l-4 1 1-4z"/></svg></button>
+    </div>
     <div id="meta" class="meta"></div>
     <div class="controls">
       <select id="model" class="btn" aria-label="Model"></select>
@@ -195,9 +244,8 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       <div id="skills-panel" class="panel" hidden></div>
       <span class="spacer"></span>
       <span id="session-actions">
-        <button id="rename-btn" class="btn" type="button">Rename</button>
-        <button id="export-btn" class="btn" type="button" aria-expanded="false">Export</button>
-        <button id="delete-btn" class="btn danger" type="button">Delete</button>
+        <button id="export-btn" class="btn icon" type="button" title="Export" aria-label="Export" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></button>
+        <button id="delete-btn" class="btn icon danger" type="button" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
       </span>
       <div id="export-panel" class="panel" hidden>
         <label><input id="export-thinking" type="checkbox"><span>Include reasoning<small>The model's thinking, folded under each reply</small></span></label>
@@ -391,6 +439,7 @@ function showControls() {
   $("#model").replaceChildren(...options);
   $("#model").value = chosen || "";
   $("#session-actions").hidden = !session;
+  $("#rename-btn").hidden = !session;
   const refs = session ? session.skills : draft.skills;
   $("#skills-btn").textContent = "Skills: " + (refs.length ? refs.map(skillName).join(", ") : "none");
   if (!$("#skills-panel").hidden) fillSkills();
@@ -464,6 +513,7 @@ function rename() {
   input.value = session.title || "";
   const title = $("#title");
   title.replaceChildren(input);
+  $("#rename-btn").hidden = true;          // the box itself is the rename now
   input.focus();
   input.select();
   let done = false;
@@ -472,6 +522,7 @@ function rename() {
     done = true;
     const text = input.value.trim();
     title.textContent = session.title || "(untitled)";
+    $("#rename-btn").hidden = !session;
     if (save && text && text !== session.title) change({ title: text });
   };
   input.addEventListener("keydown", (e) => {
@@ -1064,6 +1115,27 @@ $("#input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!streaming) submit(); }
 });
 $("#new").addEventListener("click", () => { location.hash = "new"; });
+
+// The sessions list can shrink to a rail for more room; the choice is remembered on this browser.
+function showSidebar(show) {
+  document.body.classList.toggle("sidebar-collapsed", !show);
+  const label = show ? "Collapse sessions" : "Expand sessions";
+  $("#sidebar-toggle").setAttribute("aria-expanded", String(show));
+  $("#sidebar-toggle").setAttribute("aria-label", label);
+  $("#sidebar-toggle").title = `${label} (⌘B / Ctrl+B)`;
+  remembered("acc.sidebar", show ? "shown" : "collapsed");
+}
+const collapsed = () => document.body.classList.contains("sidebar-collapsed");
+$("#sidebar-toggle").addEventListener("click", () => showSidebar(collapsed()));
+$("#rail-new").addEventListener("click", () => { location.hash = "new"; });
+$("#rail-search").addEventListener("click", () => { showSidebar(true); $("#search").focus(); });
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    showSidebar(collapsed());
+  }
+});
+showSidebar(!["collapsed", "hidden"].includes(remembered("acc.sidebar")));
 $("#model").addEventListener("change", () => change({ model: $("#model").value }));
 $("#skills-btn").addEventListener("click", () => { if (togglePanel("#skills-panel", "#skills-btn")) fillSkills(); });
 $("#export-btn").addEventListener("click", () => togglePanel("#export-panel", "#export-btn"));

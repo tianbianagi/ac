@@ -38,12 +38,12 @@ acc skills [NAME]            acc models
 ```
 
 `acc serve` opens a chat in the browser at `http://127.0.0.1:8765/` (`--port N` picks another
-port, `--no-open` skips opening a window). The sidebar lists your sessions, with search; **New
-chat** starts one with the default model. Enter sends and Shift-Enter starts a new line; pasted
+port, `--no-open` skips opening a window). The sidebar lists your sessions, with search (the ‹ at its bottom, or ⌘B / Ctrl+B, shrinks it to a rail of icons for new chat and search; › widens it again); the pencil
+starts a new chat with the default model. Enter sends and Shift-Enter starts a new line; pasted
 text keeps its line breaks. Replies stream in rendered as markdown, with reasoning folded away;
 **Stop** keeps the partial reply, as Ctrl-C does, and **Retry** asks again after a reply failed
 or was stopped. Attach files with the upload button, by dropping them on the chat, or by pasting an image; they are read as the terminal reads them (text, PDFs, images for models that can see), and attached images show in the conversation. The folder button picks files on the machine running `acc serve`, however you reach it: browse folders from your home, filter, and tick as many files as you like; ticking a folder takes everything in it, as `folder/**` would (hidden, ignored and binary files stay out). The box under the list holds everything queued, one path per line, and follows your ticks; edit it and press Enter to queue a path, a pattern such as `~/notes/**/*.md` or one of your `@names`, or delete a line to unqueue it. Paths named in a message are attached as well. The × on a sent file takes it out of the conversation, so the model stops seeing it from the next message on; the file itself is never touched. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
-**Rename** (or double-click the title), **Export** and **Delete** act on the open session. Export
+The pencil beside the title (or a double-click on it) renames the open session; the export and delete icons at the top right act on it too. Export
 saves `DATE TITLE.md` into your export folder or downloads it; like `/export`, it
 first has the model name a session that still carries its first message as its title. It listens
 only on this machine, answers only to `127.0.0.1` or `localhost`, and accepts changes only from
