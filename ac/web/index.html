@@ -80,6 +80,7 @@ select.btn { padding-right: 8px; max-width: 100%; }
 .note.error { color: var(--warn); }
 .note .btn { margin-left: 8px; }
 .msg.pending .body:empty::after { content: "…"; color: var(--muted); }
+.msg.sending { opacity: .6; }
 
 #composer { border-top: 1px solid var(--line); padding: 12px 24px 16px; }
 #composer form { max-width: 780px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
@@ -88,7 +89,10 @@ select.btn { padding-right: 8px; max-width: 100%; }
          font: inherit; line-height: 1.45; }
 #input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 #composer .btn { padding: 10px 16px; font-size: 14px; }
-#composer .btn.attach { padding: 10px 12px; }
+#composer .btn.attach { padding: 0; width: 44px; height: 44px; display: inline-flex; align-items: center;
+                        justify-content: center; color: var(--muted); flex: none; }
+#composer .btn.attach:hover { color: var(--accent); }
+#composer .btn.attach svg { width: 20px; height: 20px; }
 #pending { max-width: 780px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 #pending:empty { display: none; }
 .chip { display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono);
@@ -97,6 +101,38 @@ select.btn { padding-right: 8px; max-width: 100%; }
 .chip button:hover { color: var(--warn); }
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .thumbs img { max-width: 220px; max-height: 180px; border-radius: 8px; border: 1px solid var(--line); }
+#picker { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .35);
+          display: flex; align-items: center; justify-content: center; padding: 16px; }
+#picker[hidden] { display: none; }
+#picker .sheet { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+                 width: min(680px, 100%); height: min(640px, 100%); display: flex; flex-direction: column;
+                 box-shadow: 0 16px 48px rgba(0, 0, 0, .25); min-height: 0; }
+#picker header { display: flex; gap: 10px; align-items: center; padding: 12px 14px 8px; }
+#crumbs { flex: 1; min-width: 0; font: 13px var(--mono); overflow-x: auto; white-space: nowrap; }
+#crumbs button { border: 0; background: none; color: var(--accent); padding: 2px 1px; font: inherit; }
+#crumbs button:hover { text-decoration: underline; }
+#crumbs .sep { color: var(--muted); }
+#picker-filter, #picker-path { font: inherit; font-size: 14px; padding: 7px 10px; border: 1px solid var(--line);
+                               border-radius: 8px; background: var(--bg); color: var(--text); min-width: 0; }
+#picker-filter { margin: 0 14px 8px; }
+#picker-filter:focus, #picker-path:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#picker-list { list-style: none; margin: 0; padding: 0 8px; overflow-y: auto; flex: 1; border-top: 1px solid var(--line);
+               border-bottom: 1px solid var(--line); }
+#picker-list li { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 6px; font-size: 14px; }
+#picker-list li:hover { background: var(--panel); }
+#picker-list input { accent-color: var(--accent); }
+#picker-list .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                     border: 0; background: none; color: inherit; text-align: left; padding: 0; font: inherit; }
+#picker-list button.name { color: var(--accent); cursor: pointer; }
+#picker-list .detail { color: var(--muted); font-size: 12px; white-space: nowrap; }
+#picker-list .section { font-size: 12px; color: var(--muted); padding: 10px 8px 2px; }
+#picker-list .section:hover { background: none; }
+#picker-list li.covered .name { color: var(--muted); }
+#picker-add { display: flex; gap: 8px; padding: 10px 14px 4px; align-items: flex-end; }
+#picker-path { flex: 1; resize: none; font: 13px/1.5 var(--mono); max-height: 9.5em; overflow-y: auto; }
+#picker-status { padding: 2px 14px 12px; font-size: 13px; color: var(--muted); min-height: 1.5em; }
+#picker-status.error { color: var(--warn); }
+.chip.server { border-style: dashed; }
 body.dragging #chat { outline: 2px dashed var(--accent); outline-offset: -8px; }
 
 .msg { margin: 0 0 22px; }
@@ -121,6 +157,11 @@ details.thinking { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
 details.thinking summary { cursor: pointer; }
 details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px; margin-top: 6px; }
 .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.files .remove { border: 0; background: none; color: var(--muted); padding: 0 0 0 6px; font-size: 13px; line-height: 1; }
+.files .remove:hover { color: var(--warn); }
+.files span.asking { font-family: var(--sans); white-space: normal; display: inline-flex; flex-wrap: wrap;
+                     align-items: center; gap: 6px; }
+.files span.asking .btn { padding: 1px 8px; font-size: 12px; }
 .files span { font: 12px var(--mono); background: var(--code); border: 1px solid var(--line);
               padding: 2px 7px; border-radius: 6px; overflow-wrap: anywhere; }
 
@@ -173,13 +214,30 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
   <div id="composer">
     <div id="pending"></div>
     <form id="send">
-      <button id="attach" class="btn attach" type="button" title="Attach files" aria-label="Attach files">+</button>
+      <button id="attach" class="btn attach" type="button" title="Upload files from this computer" aria-label="Upload files from this computer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></button>
       <input id="file" type="file" multiple hidden>
+      <button id="browse" class="btn attach" type="button" title="Pick files on the server" aria-label="Pick files on the server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
       <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
       <button id="go" class="btn primary" type="submit">Send</button>
     </form>
   </div>
 </main>
+<div id="picker" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-label="Files on the server">
+    <header>
+      <nav id="crumbs" aria-label="Folder"></nav>
+      <button id="picker-done" class="btn primary" type="button">Done</button>
+    </header>
+    <input id="picker-filter" type="search" placeholder="Filter this folder" autocomplete="off">
+    <ul id="picker-list"></ul>
+    <form id="picker-add">
+      <textarea id="picker-path" rows="1" aria-label="Queued paths, one per line"
+                placeholder="Paths, patterns or @names, one per line: ~/notes/**/*.md" autocomplete="off" spellcheck="false"></textarea>
+      <button class="btn" type="submit">Apply</button>
+    </form>
+    <div id="picker-status"></div>
+  </div>
+</div>
 <script>
 "use strict";
 const $ = (sel) => document.querySelector(sel);
@@ -285,6 +343,7 @@ let session = null;                       // the open session, as the server las
 let models = [], allSkills = [];
 const draft = { model: "", skills: [] };  // choices for a new chat, until its first message
 let pending = [];                         // files to go with the next message: {name, data, size}
+let picked = [];                          // server paths to go with it: {path, label, detail}
 const chat = () => $("#chat .inner");
 
 async function loadSessions() {
@@ -495,12 +554,231 @@ function size(n) {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 }
 
+// The box under the tree is the queue written out, one path per line. It follows the tree,
+// except while you are editing it: then it waits until you apply (Enter) or revert (Esc).
+let editingPaths = false;
+
+function lineFor(entry) {
+  const home = folder ? folder.home : null;
+  if (entry.kind === "name" || !home) return entry.path;
+  return entry.path === home ? "~" : entry.path.startsWith(home + "/") ? "~" + entry.path.slice(home.length) : entry.path;
+}
+
+function showLines() {
+  if (editingPaths) return;
+  const box = $("#picker-path");
+  box.value = picked.map(lineFor).join("\n");
+  growLines();
+}
+
+function growLines() {
+  const box = $("#picker-path");
+  box.style.height = "auto";
+  box.style.height = box.scrollHeight + 2 + "px";
+}
+
+// Make the queue what the box says: new lines are queued, lines taken out are unqueued, and a
+// line that matches nothing stays in the box, to be fixed.
+// What a line means as a full path: ~ is home and a relative path is from the folder shown.
+function fullPath(line) {
+  if (line.startsWith("@") || !folder) return line;
+  const full = line === "~" || line.startsWith("~/") ? folder.home + line.slice(1)
+    : line.startsWith("/") ? line : folder.dir.replace(/\/$/, "") + "/" + line;
+  return full.length > 1 ? full.replace(/\/+$/, "") : full;
+}
+
+async function applyLines() {
+  const lines = [...new Set($("#picker-path").value.split("\n").map((l) => l.trim()).filter(Boolean))];
+  const meant = lines.map(fullPath);
+  const removed = picked.filter((p) => !meant.includes(p.path));
+  for (const p of removed) unpick(p);
+  const added = [], failed = [];
+  let last = null;
+  for (const line of lines) {
+    if (picked.some((p) => p.path === fullPath(line))) continue;
+    const entry = await pick(fullPath(line), line);
+    if (entry) { added.push(line); last = entry; } else failed.push([line, $("#picker-status").textContent]);
+  }
+  editingPaths = false;
+  showLines();
+  if (failed.length) {                     // keep what didn't work where it can be fixed
+    const box = $("#picker-path");
+    box.value = [box.value, ...failed.map(([line]) => line)].filter(Boolean).join("\n");
+    growLines();
+    editingPaths = true;
+  }
+  // Show a typed file or folder where it lives, ticked, as if it had been picked there.
+  if (last && (last.kind === "file" || last.kind === "folder") && folder) {
+    const parent = last.path.replace(/\/[^/]*$/, "") || "/";
+    if (parent !== folder.dir) await openFolder(parent);
+  }
+  showFolder();
+  const said = [];
+  if (added.length) said.push(`queued ${added.length}`);
+  if (removed.length) said.push(`removed ${removed.length}`);
+  if (failed.length) pickerStatus(failed.map(([, why]) => why).join("; "), true);
+  else pickerStatus(said.length ? said.join(", ").replace(/^./, (c) => c.toUpperCase()) : "Nothing changed");
+}
+
 function showPending() {
-  $("#pending").replaceChildren(...pending.map((f, i) => {
-    const drop = el("button", { type: "button", title: "Remove", "aria-label": `Remove ${f.name}` }, "×");
-    drop.addEventListener("click", () => { pending.splice(i, 1); showPending(); });
-    return el("span", { class: "chip" }, `${f.name} · ${size(f.size)}`, drop);
-  }));
+  showLines();
+  const chip = (text, cls, label, remove) => {
+    const drop = el("button", { type: "button", title: "Remove", "aria-label": `Remove ${label}` }, "×");
+    drop.addEventListener("click", () => { remove(); showPending(); if (!$("#picker").hidden) showFolder(); });
+    return el("span", { class: cls }, text, drop);
+  };
+  $("#pending").replaceChildren(
+    ...pending.map((f, i) => chip(`${f.name} · ${size(f.size)}`, "chip", f.name, () => pending.splice(i, 1))),
+    ...picked.map((p, i) => chip(`${p.label} · ${p.detail}`, "chip server", p.label, () => picked.splice(i, 1))));
+}
+
+// -- files on the server --------------------------------------------------------------------
+
+let folder = null;                         // what the picker shows: the /api/browse answer
+let savedNames = [];
+
+function remembered(key, value) {
+  try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch {}
+  return null;
+}
+
+const coverage = (m) => m.kind === "file" ? size(m.size)
+  : `${m.count} file${m.count === 1 ? "" : "s"} · ${size(m.size)}`;
+
+function pickerStatus(text, error = false) {
+  $("#picker-status").textContent = text;
+  $("#picker-status").classList.toggle("error", error);
+}
+
+// The picker's one record of what is queued, whether it was ticked or typed. Each entry knows
+// where its file or folder really is and which files it brings, so the tree can show it (and
+// what it covers) however it was chosen: {path, label, detail, kind, real, covers}.
+const same = (p, entry) => (p.real && entry.real) ? p.real === entry.real : p.path === entry.path;
+
+async function pick(path, label) {
+  try {
+    const m = await api("/match?path=" + encodeURIComponent(path));
+    const entry = { path: m.path, label, detail: coverage(m), kind: m.kind, real: m.real, covers: new Set(m.covers) };
+    if (picked.some((p) => same(p, entry))) {
+      pickerStatus(`${label} is already queued`);
+      return entry;
+    }
+    picked.push(entry);
+    showPending();
+    pickerStatus(`Queued ${label}: ${coverage(m)}`);
+    return entry;
+  } catch (e) {
+    pickerStatus(e.message, true);
+    return null;
+  }
+}
+
+function unpick(entry) {
+  picked = picked.filter((p) => !same(p, entry));
+  showPending();
+}
+
+// Which queued entry, other than its own, already brings this file or folder along.
+function coveredBy(entry) {
+  return picked.find((p) => !same(p, entry) && (
+    (p.kind === "folder" && p.real && entry.real && entry.real.startsWith(p.real + "/")) ||
+    (!entry.dir && entry.real && p.covers.has(entry.real))));
+}
+
+async function openFolder(dir) {
+  try {
+    folder = await api("/browse" + (dir ? "?dir=" + encodeURIComponent(dir) : ""));
+    remembered("acc.folder", folder.dir);
+    showLines();
+    $("#picker-filter").value = "";
+    pickerStatus("");
+    showFolder();
+    $("#picker-list").scrollTop = 0;
+  } catch (e) {
+    if (dir) return openFolder(null);       // a remembered folder that has gone: start at home
+    pickerStatus(e.message, true);
+  }
+}
+
+function showCrumbs() {
+  const crumbs = [];
+  let path = folder.dir, shown = folder.display;
+  // Walk up from the folder shown, one named part at a time, to ~ or /.
+  const parts = [];
+  while (true) {
+    const name = shown === "~" ? "~" : shown.split("/").pop() || "/";
+    parts.unshift([name, path]);
+    if (shown === "~" || shown === "/" || !shown.includes("/")) break;
+    shown = shown.slice(0, shown.lastIndexOf("/")) || "/";
+    path = path.slice(0, path.lastIndexOf("/")) || "/";
+  }
+  parts.forEach(([name, target], i) => {
+    if (i) crumbs.push(el("span", { class: "sep" }, parts[i - 1][0] === "/" ? "" : " / "));
+    const b = el("button", { type: "button" }, name);
+    b.addEventListener("click", () => openFolder(target));
+    crumbs.push(b);
+  });
+  $("#crumbs").replaceChildren(...crumbs);
+}
+
+// One line of the picker. An entry ({path, real, dir}) makes it something to queue; open makes
+// its name a way in. Something a queued folder, pattern or name already brings shows ticked
+// and greyed, saying what brings it.
+function row(entry, label, detail, open) {
+  const box = el("input", { type: "checkbox", "aria-label": `Queue ${label}` });
+  if (entry === null) {
+    box.style.visibility = "hidden";
+    box.disabled = true;
+  } else {
+    const via = coveredBy(entry);
+    box.checked = !!via || picked.some((p) => same(p, entry));
+    if (via && !picked.some((p) => same(p, entry))) {
+      box.disabled = true;
+      detail = `in ${via.label}`;
+    }
+    box.addEventListener("change", async () => {
+      if (box.checked) box.checked = !!(await pick(entry.path, label)); else unpick(entry);
+      showFolder();                        // what it covers changes with it
+    });
+  }
+  const name = open ? el("button", { type: "button", class: "name" }, label) : el("span", { class: "name" }, label);
+  if (open) name.addEventListener("click", open);
+  return el("li", { class: box.disabled && entry ? "covered" : "" }, box, name, el("span", { class: "detail" }, detail));
+}
+
+function showFolder() {
+  if (!folder) return;
+  showCrumbs();
+  const q = $("#picker-filter").value.trim().toLowerCase();
+  const rows = [];
+  if (folder.dir === folder.home && savedNames.length && !q) {
+    rows.push(el("li", { class: "section" }, "Your names"));
+    for (const n of savedNames)
+      rows.push(row({ path: "@" + n.name }, "@" + n.name, n.paths.length === 1 ? n.paths[0] : `${n.paths.length} paths`));
+    rows.push(el("li", { class: "section" }, "This folder"));
+  }
+  if (folder.parent && !q) rows.push(row(null, "../", "up", () => openFolder(folder.parent)));
+  for (const e of folder.entries) {
+    if (q && !e.name.toLowerCase().includes(q)) continue;
+    rows.push(e.dir ? row(e, e.name + "/", "folder", () => openFolder(e.path))
+                    : row(e, e.name, size(e.size)));
+  }
+  if (!folder.entries.length) rows.push(el("li", { class: "section" }, "Nothing here to attach."));
+  $("#picker-list").replaceChildren(...rows);
+}
+
+async function openPicker() {
+  $("#picker").hidden = false;
+  editingPaths = false;                    // an edit left unapplied last time is let go
+  try { savedNames = (await api("/names")).names; } catch { savedNames = []; }
+  if (!folder) await openFolder(remembered("acc.folder"));
+  else showFolder();
+  $("#picker-filter").focus();
+}
+
+function closePicker() {
+  $("#picker").hidden = true;
+  $("#input").focus();
 }
 
 function readFile(file) {
@@ -524,6 +802,44 @@ async function addFiles(list) {
   $("#input").focus();
 }
 
+// A file that came with a message. A saved one can be taken out of the conversation: the model
+// doesn't see it again, and the file itself, wherever it lives, is left alone.
+function fileChip(a) {
+  const name = a.path.split("/").pop() || a.path;
+  const chip = el("span", { title: [a.path, a.note].filter(Boolean).join(" · ") }, name);
+  if (a.id == null) return chip;
+  const x = el("button", { type: "button", class: "remove", title: "Remove from this conversation",
+                           "aria-label": `Remove ${name} from this conversation` }, "×");
+  chip.append(x);
+  x.addEventListener("click", () => {
+    const before = [...chip.childNodes];
+    const yes = el("button", { class: "btn danger primary", type: "button" }, "Remove");
+    const no = el("button", { class: "btn", type: "button" }, "Keep");
+    chip.classList.add("asking");
+    chip.replaceChildren(`Remove ${name} from this conversation? The file itself isn't touched.`, yes, no);
+    const restore = () => { chip.classList.remove("asking"); chip.replaceChildren(...before); };
+    no.addEventListener("click", restore);
+    no.focus();
+    yes.addEventListener("click", async () => {
+      try {
+        const res = await fetch(`/api/attachments/${a.id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        const article = chip.closest("article"), list = chip.parentElement;
+        chip.remove();
+        article?.querySelector(`.thumbs img[src="/api/attachments/${a.id}"]`)?.remove();
+        if (list && !list.children.length) list.remove();
+        const thumbs = article?.querySelector(".thumbs");
+        if (thumbs && !thumbs.children.length) thumbs.remove();
+      } catch (e) {
+        restore();
+        note(e.message, "error");
+      }
+    });
+  });
+  return chip;
+}
+
 function renderMessage(m) {
   const who = m.role === "user" ? names.user : m.role === "assistant" ? names.assistant : m.role;
   const status = m.status !== "complete" ? el("span", { class: "status" }, ` · ${m.status}`) : null;
@@ -533,9 +849,7 @@ function renderMessage(m) {
   const thinking = m.thinking
     ? el("details", { class: "thinking" }, el("summary", {}, "Thinking"), el("div", { class: "plain" }, m.thinking))
     : null;
-  const files = m.attachments.length
-    ? el("div", { class: "files" }, ...m.attachments.map((a) => el("span", { title: a.note || a.kind }, a.path)))
-    : null;
+  const files = m.attachments.length ? el("div", { class: "files" }, ...m.attachments.map(fileChip)) : null;
   const pictures = m.attachments.filter((a) => a.kind === "image" && a.id != null);
   const thumbs = pictures.length
     ? el("div", { class: "thumbs" }, ...pictures.map((a) => el("img", { src: `/api/attachments/${a.id}`, alt: a.path, loading: "lazy" })))
@@ -632,8 +946,20 @@ async function send(request) {
   setStreaming(ctrl);
   if (!current) chat().replaceChildren();
   chat().querySelectorAll(".note").forEach((n) => { if (n.querySelector("button")) n.remove(); });
-  let reply = null, failed = false, sent = false;
-  const body = { session: current, ...request };
+  let reply = null, failed = false, sent = false, error = null, early = null;
+  const { picked: pickedBefore, ...rest } = request;
+  if (request.text !== undefined) {
+    // Shown straight away, files and all: reading them on the server can take a while.
+    early = renderMessage({ role: "user", content: request.text, status: "complete", attachments: [
+      ...(request.files || []).map((f) => ({ path: f.name, kind: "upload", note: size(f.size) })),
+      ...(pickedBefore || []).map((p) => ({ path: p.path, kind: "server", note: p.detail })),
+    ] });
+    early.classList.add("sending");
+    early.querySelector(".who").append(el("span", { class: "status" }, " · sending"));
+    chat().append(early);
+    scrollDown(true);
+  }
+  const body = { session: current, ...rest };
   if (!current) Object.assign(body, { model: draft.model || null, skills: draft.skills });
   try {
     const res = await fetch("/api/chat", {
@@ -665,7 +991,8 @@ async function send(request) {
           note(event.text);
         } else if (event.type === "message" && event.message.role === "user") {
           sent = true;
-          chat().append(renderMessage(event.message));
+          const saved = renderMessage(event.message);
+          if (early) { early.replaceWith(saved); early = null; } else chat().append(saved);
           reply = pendingReply();
           chat().append(reply.node);
           scrollDown(true);
@@ -679,6 +1006,7 @@ async function send(request) {
           scrollDown();
         } else if (event.type === "error") {
           failed = true;
+          error = event.text;
           note(event.text, "error");
         } else if (event.type === "done" && event.used && event.context) {
           $("#meta").textContent += ` · ${event.used.toLocaleString()} / ${event.context.toLocaleString()} tokens`;
@@ -686,18 +1014,25 @@ async function send(request) {
       }
     }
   } catch (e) {
-    if (e.name !== "AbortError") { failed = true; note(e.message, "error"); }
+    if (e.name !== "AbortError") { failed = true; error = e.message; note(e.message, "error"); }
   } finally {
     setStreaming(null);
   }
+  if (early) early.remove();                 // it never arrived; the text goes back in the box
   if (!sent && request.text !== undefined) {
     // It never arrived: give the message and its files back rather than lose them.
     if (!$("#input").value.trim()) { $("#input").value = request.text; grow(); }
-    if (!pending.length && request.files) { pending = request.files; showPending(); }
+    if (!pending.length && request.files) pending = request.files;
+    if (!picked.length && pickedBefore) picked = pickedBefore;
+    showPending();
   }
   if (ctrl.signal.aborted || failed) {
-    // What was kept is on the server now; show it as saved, with the offer to try again.
-    if (current) setTimeout(() => openSession(current), ctrl.signal.aborted ? 300 : 0);
+    // What was kept is on the server now; show it as saved, keeping the reason in view.
+    const id = current;
+    if (id) setTimeout(async () => {
+      await openSession(id);
+      if (error && current === id) { note(error, "error"); scrollDown(true); }
+    }, ctrl.signal.aborted ? 300 : 0);
     else if (reply) reply.node.remove();
   }
   loadSessions();
@@ -707,15 +1042,16 @@ function submit() {
   if (streaming) { streaming.abort(); return; }
   const input = $("#input"), text = input.value.trim();
   if (!text) {
-    if (pending.length) note("Add a few words to go with the files.");
+    if (pending.length || picked.length) note("Add a few words to go with the files.");
     return;
   }
   input.value = "";
   grow();
-  const files = pending;
+  const files = pending, paths = picked;
   pending = [];
+  picked = [];
   showPending();
-  send({ text, files });
+  send({ text, files, paths: paths.map((p) => p.path), picked: paths });
 }
 
 function grow() {
@@ -742,8 +1078,39 @@ $("#rename-btn").addEventListener("click", rename);
 $("#title").addEventListener("dblclick", rename);
 $("#delete-btn").addEventListener("click", askDelete);
 document.addEventListener("click", (e) => { if (!e.target.closest(".controls")) closePanels(); });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanels(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("#picker").hidden) { e.preventDefault(); closePicker(); } else closePanels();
+});
 $("#attach").addEventListener("click", () => $("#file").click());
+$("#browse").addEventListener("click", openPicker);
+$("#picker-done").addEventListener("click", closePicker);
+$("#picker").addEventListener("click", (e) => { if (e.target === $("#picker")) closePicker(); });
+$("#picker-filter").addEventListener("input", showFolder);
+$("#picker-filter").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {                 // Enter opens the one folder the filter leaves, if any
+    e.preventDefault();
+    const q = $("#picker-filter").value.trim().toLowerCase();
+    const hits = folder ? folder.entries.filter((x) => x.name.toLowerCase().includes(q)) : [];
+    if (q && hits.length === 1 && hits[0].dir) openFolder(hits[0].path);
+  }
+});
+$("#picker-add").addEventListener("submit", (e) => { e.preventDefault(); applyLines(); });
+$("#picker-path").addEventListener("input", () => {
+  editingPaths = true;
+  growLines();
+  pickerStatus("Edited: Enter applies, Esc reverts");
+});
+$("#picker-path").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); applyLines(); }
+  else if (e.key === "Escape" && editingPaths) {   // revert first; a second Esc closes the picker
+    e.preventDefault();
+    e.stopPropagation();
+    editingPaths = false;
+    showLines();
+    pickerStatus("");
+  }
+});
 $("#file").addEventListener("change", () => { addFiles([...$("#file").files]); $("#file").value = ""; });
 $("#input").addEventListener("paste", (e) => {
   const list = [...(e.clipboardData?.files || [])];

@@ -359,5 +359,114 @@ class ServerTest(unittest.TestCase):
         self.assertIn("can't write", body["error"])
 
 
+    # -- files on the server ---------------------------------------------------
+
+    def tree(self):
+        root = (Path(self.db).parent / "project").resolve()
+        (root / "src" / "deep").mkdir(parents=True)
+        (root / "src" / "app.py").write_text("print('hi')\n")
+        (root / "src" / "deep" / "util.py").write_text("def f(): pass\n")
+        (root / "src" / ".secret").write_text("hidden\n")
+        (root / "node_modules").mkdir()
+        (root / "notes.md").write_text("# notes\n")
+        (root / ".hidden").mkdir()
+        return root
+
+    def test_browse_a_folder(self):
+        root = self.tree()
+        status, body = self.get(f"/api/browse?dir={root}")
+        self.assertEqual(status, 200)
+        self.assertEqual((body["dir"], body["parent"]), (str(root), str(root.parent)))
+        self.assertEqual([(e["name"], e["dir"], e["size"]) for e in body["entries"]],
+                         [("src", True, None), ("notes.md", False, 8)])
+        _, body = self.get("/api/browse")
+        self.assertEqual(body["dir"], str(Path.home().resolve()))
+        self.assertEqual(self.get(f"/api/browse?dir={root}/notes.md")[0], 404)
+        # A folder reached through a symlink keeps the name it was reached by.
+        link = root.parent / "shortcut"
+        link.symlink_to(root)
+        _, body = self.get(f"/api/browse?dir={link}")
+        self.assertEqual((body["dir"], body["entries"][0]["path"]), (str(link), str(link / "src")))
+
+    def test_match_says_what_an_entry_covers(self):
+        root = self.tree()
+        self.store.set_resource("proj", [str(root / "notes.md"), str(root / "src" / "app.py")])
+        _, body = self.get(f"/api/match?path={root}/src/")
+        self.assertEqual({k: body[k] for k in ("kind", "count", "size", "path", "real")},
+                         {"kind": "folder", "count": 2, "size": 26, "path": str(root / "src"),
+                          "real": str(root / "src")})
+        self.assertEqual(body["covers"], [str(root / "src" / "app.py"),
+                                          str(root / "src" / "deep" / "util.py")])
+        _, body = self.get(f"/api/match?path={root}/**/*.py")
+        self.assertEqual((body["kind"], body["count"], body["real"]), ("pattern", 2, None))
+        _, body = self.get(f"/api/match?path={root}/notes.md")
+        self.assertEqual((body["kind"], body["count"], body["size"]), ("file", 1, 8))
+        self.assertEqual(self.get("/api/match?path=@proj")[1]["kind"], "name")
+        status, body = self.get(f"/api/match?path={root}/nope.txt")
+        self.assertEqual((status, body["error"]), (404, f"nothing matches {root}/nope.txt"))
+        _, body = self.get("/api/names")
+        self.assertEqual(body["names"][0]["name"], "proj")
+
+    def test_a_folder_typed_and_the_same_folder_browsed_agree(self):
+        # However a file is reached, through a symlink or not, the picker sees one place.
+        root = self.tree()
+        link = root.parent / "shortcut"
+        link.symlink_to(root)
+        _, browsed = self.get(f"/api/browse?dir={link}")
+        _, typed = self.get(f"/api/match?path={root}/src")
+        src = next(e for e in browsed["entries"] if e["name"] == "src")
+        self.assertEqual(src["path"], str(link / "src"))
+        self.assertEqual(src["real"], typed["real"])
+        _, typed = self.get(f"/api/match?path={link}/notes.md")
+        notes = next(e for e in browsed["entries"] if e["name"] == "notes.md")
+        self.assertEqual(notes["real"], typed["real"])
+
+    def test_picked_server_files_go_with_the_message(self):
+        root = self.tree()
+        self.fake.reply("Seen.")
+        _, events = self.post("/api/chat", {
+            "session": self.soup.id, "text": "Review",
+            "paths": [str(root / "src"), str(root / "notes.md"), str(root / "gone.txt")]})
+        user = next(e["message"] for e in events if e["type"] == "message")
+        self.assertEqual([a["path"] for a in user["attachments"]],
+                         [str(root / "src" / "app.py"), str(root / "src" / "deep" / "util.py"),
+                          str(root / "notes.md")])
+        notes = [e["text"] for e in events if e["type"] == "note"]
+        self.assertIn(f"nothing matches {root}/gone.txt", notes)
+        self.assertTrue(any(n.startswith("attached 2 files from ") and "/src/" in n for n in notes), notes)
+        sent = self.fake.requests[-1]["messages"][-1]["content"]
+        self.assertIn("print('hi')", sent)
+        self.assertNotIn("hidden", sent)
+        # Naming a picked file in the text too doesn't send it twice.
+        self.fake.reply("ok")
+        _, events = self.post("/api/chat", {"session": self.soup.id, "text": f"again {root}/notes.md",
+                                            "paths": [str(root / "notes.md")]})
+        user = next(e["message"] for e in events if e["type"] == "message")
+        self.assertEqual(len(user["attachments"]), 1)
+
+
+    def test_remove_a_file_from_the_conversation(self):
+        notes = Path(self.db).parent / "notes.txt"
+        notes.write_text("buy leeks")
+        self.fake.reply("Noted.")
+        _, events = self.post("/api/chat", {"session": self.soup.id, "text": "see",
+                                            "paths": [str(notes)]})
+        attachment = next(e["message"] for e in events if e["type"] == "message")["attachments"][0]
+        self.assertEqual(self.delete(f"/api/attachments/{attachment['id']}"),
+                         (200, {"deleted": attachment["id"]}))
+        self.assertTrue(notes.exists())                  # only the conversation's copy goes
+        self.assertEqual(self.delete(f"/api/attachments/{attachment['id']}")[0], 404)
+        self.assertEqual(self.delete("/api/attachments/nope")[0], 404)
+        messages = self.store.messages(self.soup.id)
+        self.assertEqual([m.content for m in messages], ["Leek soup?", "see", "Noted."])
+        self.assertEqual(messages[1].attachments, [])
+        # The model doesn't see it again.
+        self.fake.reply("ok")
+        self.post("/api/chat", {"session": self.soup.id, "text": "and now?"})
+        self.assertNotIn("buy leeks", json.dumps(self.fake.requests[-1]))
+        status, _ = self.delete(f"/api/attachments/{attachment['id']}", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+
+
 if __name__ == "__main__":
     unittest.main()

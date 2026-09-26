@@ -9,6 +9,7 @@ import base64
 import binascii
 import json
 import mimetypes
+import os
 import tempfile
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -81,6 +82,88 @@ def read_uploads(uploads):
     return attachments, notes
 
 
+def path_refs(paths, names):
+    """Refs for what the page's server-file picker queued, plus lines the user should see.
+
+    Each entry is a path on this machine as the picker gives it: a file is attached as it is,
+    a folder with everything in it (the way folder/** would be, so hidden, ignored and binary
+    files stay out), a pattern with what it matches, and @NAME with what the name stands for.
+    """
+    if not isinstance(paths, list):
+        raise BadRequest("paths must be a list")
+    refs, problems = [], []
+    for raw in paths:
+        word = str(raw).strip()
+        if not word:
+            continue
+        if word.startswith("@") and word[1:].lower() in names:
+            refs += files.named_refs(word[1:].lower(), names, problems)
+            continue
+        folder = Path(word).expanduser()
+        if "*" not in word and folder.is_dir():
+            ref = files.resolve(os.path.join(folder, "**"), explicit=True)
+            if ref is None:
+                problems.append(f"nothing in {files.display_path(folder)}/ to attach")
+            else:
+                refs.append(ref._replace(label=files.display_path(folder.resolve()) + "/"))
+            continue
+        ref = files.resolve(word, explicit=True)
+        if ref is None:
+            problems.append(f"nothing matches {word}")
+        else:
+            refs.append(ref)
+    return refs, problems
+
+
+def browse(folder):
+    """What a folder on this machine holds, for the page's picker: folders first, then files,
+    leaving out what /files leaves out. Paths stay as they were reached, so a folder entered
+    through a symlink (~/accspace) keeps that name rather than where the link points."""
+    path = Path(os.path.abspath(Path(folder or "~").expanduser()))
+    if not path.is_dir():
+        raise NotFound(f"{folder} isn't a folder here")
+    entries = []
+    for found in files.here(path):
+        item = path / found.name
+        try:
+            is_dir = item.is_dir()
+            entries.append({"name": item.name, "path": str(item), "real": os.path.realpath(item),
+                            "dir": is_dir,
+                            "size": None if is_dir else item.stat().st_size})
+        except OSError:
+            continue
+    return {"dir": str(path), "display": files.display_path(path),
+            "parent": str(path.parent) if path.parent != path else None,
+            "home": os.path.abspath(Path.home()), "entries": entries}
+
+
+MAX_COVERS = 5000
+
+
+def match(word, names):
+    """What one picker entry covers, before it is queued, so the page can show it however it
+    was chosen, ticked in a folder or typed: {"kind", "count", "size", "path" (the entry as
+    the page should send it), "real" (where a file or folder really is), "covers" (the files
+    it brings, by where they really are, up to MAX_COVERS)}."""
+    word = word.strip()
+    refs, problems = path_refs([word], names)
+    if not refs:
+        raise NotFound(problems[0] if problems else f"nothing matches {word}")
+    kind = ("name" if word.startswith("@") else "pattern" if "*" in word
+            else "folder" if Path(word).expanduser().is_dir() else "file")
+    path = word if kind == "name" else os.path.abspath(os.path.expanduser(word))
+    paths = [p for r in refs for p in (r.matches if r.matches is not None else [r.path])]
+    size = 0
+    for p in paths:
+        try:
+            size += p.stat().st_size
+        except OSError:
+            pass
+    return {"kind": kind, "count": len(paths), "size": size, "path": path,
+            "real": os.path.realpath(path) if kind in ("file", "folder") else None,
+            "covers": [os.path.realpath(p) for p in paths[:MAX_COVERS]]}
+
+
 def update_session(store, client, session, request):
     """Change a session's title, model or skills from {"title": ..., "model": NAME,
     "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's."""
@@ -136,8 +219,12 @@ def chat(store, client, request):
         if not session.persisted:
             session.title, session.title_source = first_message_title(text), "auto"
             store.save(session)
-        found, problems = files.collect(text, store.resources())
-        attachments = uploaded + found
+        names = store.resources()
+        refs, picked_problems = path_refs(request.get("paths") or [], names)
+        picked, picked_notes = files.read_refs(refs, already=uploaded)
+        found, problems = files.collect(text, names, already=uploaded + picked)
+        attachments = uploaded + picked + found
+        problems = picked_problems + picked_notes + problems
         yield {"type": "session", "session": session_json(store.get(session.id))}
         for line in upload_notes + problems + files.announce(attachments):
             yield {"type": "note", "text": line}
@@ -284,6 +371,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok() or not self._same_origin():
             return self._error(403, "forbidden")
         path = urlsplit(self.path).path
+        if path.startswith("/api/attachments/"):
+            return self._delete_attachment(path[len("/api/attachments/"):])
         if not path.startswith("/api/sessions/"):
             return self._error(404, "not found")
         store = Store(self.db_path)
@@ -293,6 +382,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"deleted": session.id})
         except (NotFound, Ambiguous) as e:
             return self._error(404, str(e))
+        finally:
+            store.close()
+
+    def _delete_attachment(self, ref):
+        """Take one file out of a conversation, as Ctrl-D does in /files: the message it came
+        with stays, the file on disk is never touched, and the model doesn't see it again."""
+        store = Store(self.db_path)
+        try:
+            try:
+                attachment = store.attachment(int(ref))
+            except (ValueError, NotFound):
+                return self._error(404, "no such attachment")
+            store.delete_attachment(attachment.id)
+            return self._json({"deleted": attachment.id})
         finally:
             store.close()
 
@@ -347,6 +450,8 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _event(self, event):
+        if event["type"] == "error":
+            self.log_message("reply failed: %s", event["text"])
         self.wfile.write(json.dumps(event).encode() + b"\n")
         self.wfile.flush()
 
@@ -369,6 +474,14 @@ class Handler(BaseHTTPRequestHandler):
                 {"name": m["name"], "size": m.get("size"),
                  "parameter_size": (m.get("details") or {}).get("parameter_size")}
                 for m in models]})
+        if path == "/browse":
+            return self._json(browse((query.get("dir") or [""])[0]))
+        if path == "/match":
+            return self._json(match((query.get("path") or [""])[0], store.resources()))
+        if path == "/names":
+            return self._json({"names": [
+                {"name": name, "paths": [files.display_path(p) for p in paths]}
+                for name, paths in store.resources().items()]})
         if path == "/skills":
             return self._json({"skills": [{"name": s.name, "description": s.description}
                                           for _, s in sorted(skills.discover().items())]})
