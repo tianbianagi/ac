@@ -78,11 +78,10 @@ class ReplTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name).resolve()
         env = mock.patch.dict(os.environ, {"AC_SKILLS_PATH": str(self.tmp / "skills"),
-                                           "XDG_CONFIG_HOME": str(self.tmp / "config")})
+                                           "AC_CONFIG_DIR": str(self.tmp / "config" / "ac")})
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_EXPORT_DIR", None)
-        os.environ.pop("AC_CONFIG_DIR", None)
         self.store = Store(":memory:")
         self.addCleanup(self.store.close)
         self.out = io.StringIO()

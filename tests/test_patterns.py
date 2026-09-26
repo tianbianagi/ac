@@ -28,10 +28,9 @@ class PatternTest(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(self.root)
         self.addCleanup(os.chdir, cwd)
-        config = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.root / "no-config")})
+        config = mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(self.root / "no-config" / "ac")})
         config.start()
         self.addCleanup(config.stop)
-        os.environ.pop("AC_CONFIG_DIR", None)
 
     def write(self, name, content):
         path = self.root / name

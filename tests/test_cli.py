@@ -27,13 +27,12 @@ class CliTest(unittest.TestCase):
         self.tmp = Path(tmp.name).resolve()
         env = mock.patch.dict(os.environ, {
             "AC_DB": str(self.tmp / "ac.db"), "AC_SKILLS_PATH": str(self.tmp / "skills"),
-            "XDG_CONFIG_HOME": str(self.tmp / "config"), "OLLAMA_HOST": self.fake.host,
+            "AC_CONFIG_DIR": str(self.tmp / "config" / "ac"), "OLLAMA_HOST": self.fake.host,
             "NO_COLOR": "1"})
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_MODEL", None)
         os.environ.pop("AC_EXPORT_DIR", None)
-        os.environ.pop("AC_CONFIG_DIR", None)
 
     def ac(self, *argv, stdin=""):
         out, err = io.StringIO(), io.StringIO()

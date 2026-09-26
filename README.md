@@ -127,7 +127,7 @@ description: Short, direct answers with no preamble or recap
 Answer in as few words as the question allows. ...
 ```
 
-Put skills in `~/.config/ac/skills/<name>/SKILL.md` (see `examples/skills/`), or add directories
+Put skills in `~/accspace/config/skills/<name>/SKILL.md` (see `examples/skills/`), or add directories
 with `AC_SKILLS_PATH`. Attach from the `/skills` list, by name, or by path to any markdown file:
 `/skills ./notes/style.md`.
 
@@ -175,7 +175,7 @@ with `AC_SKILLS_PATH`. Attach from the `/skills` list, by name, or by path to an
 
 ## Configuration
 
-Personal settings live in `~/.config/ac/config.toml` (optional):
+Personal settings live in `~/accspace/config/config.toml` (optional):
 
 ```toml
 # Where /export and `acc export --save` write when no filename is given.
@@ -219,7 +219,7 @@ are dropped, and if another session already owns the name, the session id is app
 | `AC_MARKDOWN` | `0` shows replies as raw markdown; overrides `markdown` in `config.toml` | rendered |
 | `AC_STATUS_BAR` | `0` prints a status line after each reply instead of the bar; overrides `status_bar` in `config.toml` | bar |
 | `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
-| `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/.config/ac` |
+| `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |
 | `AC_DEBUG=1` | print each request payload to stderr | |

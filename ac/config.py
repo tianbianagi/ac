@@ -24,10 +24,11 @@ def db_path():
 
 
 def config_dir():
+    """Folder holding config.toml and skills/: $AC_CONFIG_DIR, else ~/accspace/config."""
     override = os.environ.get("AC_CONFIG_DIR")
     if override:
         return Path(override).expanduser()
-    return _xdg("XDG_CONFIG_HOME", ".config")
+    return Path.home() / "accspace" / "config"
 
 
 def skills_dirs():
