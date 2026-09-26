@@ -17,3 +17,6 @@ acc = "ac.cli:main"
 
 [tool.setuptools]
 packages = ["ac"]
+
+[tool.setuptools.package-data]
+ac = ["web/*"]

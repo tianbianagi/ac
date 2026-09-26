@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, config, files, picker, render, skills, titles
+from . import __version__, config, files, picker, render, server, skills, titles
 from .ollama import Client, OllamaError, resolve_model
 from .repl import Repl, setup_readline
 from .statusbar import StatusBar
@@ -257,6 +257,13 @@ def cmd_models(args):
         print("  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
 
 
+def cmd_serve(args):
+    try:
+        server.serve(args.port, open_browser=not args.no_open)
+    except OSError as e:
+        raise StoreError(f"can't serve on port {args.port}: {e.strerror or e}") from None
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=config.COMMAND, description="Agentless chat with local Ollama models. "
@@ -333,6 +340,11 @@ def build_parser():
     p.add_argument("name", nargs="?")
 
     add("models", cmd_models, "list installed Ollama models")
+
+    p = add("serve", cmd_serve, "browse sessions in a web browser")
+    p.add_argument("-p", "--port", type=int, default=server.DEFAULT_PORT,
+                   help=f"port on 127.0.0.1 (default {server.DEFAULT_PORT})")
+    p.add_argument("--no-open", action="store_true", help="don't open a browser window")
     return parser
 
 
