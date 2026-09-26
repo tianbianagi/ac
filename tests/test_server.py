@@ -8,7 +8,9 @@ from pathlib import Path
 from unittest import mock
 
 from ac import server
+from ac.ollama import Client
 from ac.store import Attachment, Store
+from tests.fake_ollama import FakeOllama
 
 
 class ServerTest(unittest.TestCase):
@@ -16,20 +18,24 @@ class ServerTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.db = Path(tmp.name) / "ac.db"
-        env = mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(Path(tmp.name) / "config")})
+        env = mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(Path(tmp.name) / "config"),
+                                           "AC_SKILLS_PATH": str(Path(tmp.name) / "skills")})
         env.start()
         self.addCleanup(env.stop)
+        os.environ.pop("AC_MODEL", None)
+        self.fake = FakeOllama()
+        self.addCleanup(self.fake.stop)
 
-        store = Store(self.db)
+        self.store = store = Store(self.db)
         self.addCleanup(store.close)
         self.lisbon = store.save(store.draft("m1", title="Trip to Lisbon", skills=["concise"]))
         store.add_message(self.lisbon.id, "user", "Plan three days",
                           attachments=[Attachment(path="/tmp/notes.md", kind="text", content="hi")])
         store.add_message(self.lisbon.id, "assistant", "**Day 1**: Alfama", thinking="hmm")
-        self.soup = store.save(store.draft("m2", title="Soup"))
+        self.soup = store.save(store.draft("m2:latest", title="Soup"))
         store.add_message(self.soup.id, "user", "Leek soup?")
 
-        self.httpd = server.make_server(0, db_path=self.db)
+        self.httpd = server.make_server(0, db_path=self.db, client=Client(self.fake.host))
         self.port = self.httpd.server_address[1]
         thread = threading.Thread(target=self.httpd.serve_forever, args=(0.05,), daemon=True)
         thread.start()
@@ -46,6 +52,19 @@ class ServerTest(unittest.TestCase):
         if res.getheader("Content-Type") == "application/json":
             body = json.loads(body)
         return res.status, body
+
+    def post(self, path, body, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        self.addCleanup(conn.close)
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        conn.request("POST", path, body=data, headers={
+            "Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json",
+            "Origin": f"http://127.0.0.1:{self.port}", **(headers or {})})
+        res = conn.getresponse()
+        raw = res.read()
+        if res.getheader("Content-Type") == "application/x-ndjson":
+            return res.status, [json.loads(line) for line in raw.splitlines()]
+        return res.status, json.loads(raw)
 
     def test_lists_sessions_newest_first(self):
         status, body = self.get("/api/sessions")
@@ -94,6 +113,93 @@ class ServerTest(unittest.TestCase):
         status, _ = self.get("/api/sessions", host=f"evil.example:{self.port}")
         self.assertEqual(status, 403)
         self.assertEqual(self.get("/api/sessions", host=f"localhost:{self.port}")[0], 200)
+
+
+    # -- chatting ----------------------------------------------------------
+
+    def test_chat_in_a_session_streams_and_saves_the_reply(self):
+        self.fake.reply("Day 2: ", "Belém", thinking="more days")
+        status, events = self.post("/api/chat", {"session": self.lisbon.id, "text": "And then?"})
+        self.assertEqual(status, 200)
+        kinds = [e["type"] for e in events]
+        self.assertEqual(kinds, ["session", "message", "note", "thinking", "content", "content",
+                                 "message", "done"])
+        self.assertEqual(events[2]["text"], "skill 'concise' can't be loaded; continuing without it")
+        self.assertEqual(events[1]["message"]["content"], "And then?")
+        self.assertEqual(events[-2]["message"]["content"], "Day 2: Belém")
+        self.assertEqual(events[-1], {"type": "done", "used": 18, "context": 1000})
+        stored = self.store.messages(self.lisbon.id)
+        self.assertEqual([(m.role, m.content, m.status) for m in stored[2:]],
+                         [("user", "And then?", "complete"),
+                          ("assistant", "Day 2: Belém", "complete")])
+        self.assertEqual(stored[3].thinking, "more days")
+        # The whole conversation went to the model, the thinking of earlier replies did not.
+        sent = self.fake.requests[-1]["messages"]
+        self.assertEqual([m["role"] for m in sent], ["user", "assistant", "user"])
+        self.assertNotIn("hmm", json.dumps(sent))
+
+    def test_chat_without_a_session_starts_one(self):
+        self.fake.reply("Hello!")
+        status, events = self.post("/api/chat", {"text": "Hi there", "model": "m2"})
+        self.assertEqual(status, 200)
+        session = events[0]["session"]
+        self.assertEqual((session["title"], session["model"]), ("Hi there", "m2:latest"))
+        self.assertEqual([m.content for m in self.store.messages(session["id"])],
+                         ["Hi there", "Hello!"])
+
+    def test_chat_attaches_files_the_message_names(self):
+        notes = Path(self.db).parent / "notes.txt"
+        notes.write_text("buy leeks")
+        self.fake.reply("Noted.")
+        _, events = self.post("/api/chat", {"session": self.soup.id, "text": f"see {notes}"})
+        self.assertTrue(any(e["type"] == "note" and "notes.txt" in e["text"] for e in events))
+        self.assertIn("buy leeks", self.fake.requests[-1]["messages"][-1]["content"])
+
+    def test_a_failed_reply_is_reported_and_can_be_retried(self):
+        self.fake.scripts.append([("content", "half"), ("error", "out of memory")])
+        _, events = self.post("/api/chat", {"session": self.soup.id, "text": "Recipe?"})
+        self.assertEqual(events[-1], {"type": "error", "text": "out of memory"})
+        self.assertEqual(self.store.messages(self.soup.id)[-1].status, "error")
+
+        self.fake.reply("Leeks, potatoes, stock.")
+        status, events = self.post("/api/chat", {"session": self.soup.id, "retry": True})
+        self.assertEqual(status, 200)
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual([(m.role, m.content) for m in self.store.messages(self.soup.id)],
+                         [("user", "Leek soup?"), ("user", "Recipe?"),
+                          ("assistant", "Leeks, potatoes, stock.")])
+
+    def test_a_reply_the_page_leaves_is_kept_as_interrupted(self):
+        self.fake.reply("one ", "two ", "three")
+        events = server.chat(self.store, Client(self.fake.host),
+                             {"session": self.soup.id, "text": "Count"})
+        for event in events:
+            if event["type"] == "content":
+                break
+        events.close()
+        last = self.store.messages(self.soup.id)[-1]
+        self.assertEqual((last.role, last.content, last.status), ("assistant", "one ", "interrupted"))
+
+    def test_bad_chat_requests(self):
+        self.assertEqual(self.post("/api/chat", {"session": self.soup.id, "text": "  "}),
+                         (400, {"error": "nothing to send"}))
+        self.assertEqual(self.post("/api/chat", {"session": "zzzz", "text": "hi"})[0], 404)
+        self.assertEqual(self.post("/api/chat", {"text": "hi", "model": "nope"})[0], 502)
+        empty = self.store.save(self.store.draft("m1", title="Empty"))
+        self.assertEqual(self.post("/api/chat", {"session": empty.id, "retry": True}),
+                         (400, {"error": "nothing to retry"}))
+        self.assertEqual(self.post("/api/chat", b"[1, 2]")[0], 400)
+        self.assertEqual(self.post("/api/nope", {"text": "hi"})[0], 404)
+        self.assertEqual(self.fake.requests, [])
+
+    def test_refuses_posts_from_other_sites(self):
+        # A form on another site can post to 127.0.0.1 with the right Host; it can't send JSON
+        # without asking first, and its Origin gives it away.
+        status, _ = self.post("/api/chat", {"text": "hi"}, {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        status, _ = self.post("/api/chat", {"text": "hi"}, {"Content-Type": "text/plain"})
+        self.assertEqual(status, 415)
+        self.assertEqual(self.fake.requests, [])
 
 
 if __name__ == "__main__":

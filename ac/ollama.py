@@ -130,3 +130,16 @@ def resolve_model(client, name):
     installed = ", ".join(names) or "none (try `ollama pull <model>`)"
     problem = "is ambiguous" if matches else "is not installed"
     raise OllamaError(f"model '{name}' {problem}. Installed: {installed}")
+
+
+def pick_model(client, requested=None):
+    """Model for a new session: the one asked for, then $AC_MODEL, then the built-in default."""
+    name = requested or config.model_override()
+    if name:
+        return resolve_model(client, name)
+    names = [m["name"] for m in client.list_models()]
+    if config.DEFAULT_MODEL in names:
+        return config.DEFAULT_MODEL
+    if not names:
+        raise OllamaError(f"no models installed. Try `ollama pull {config.DEFAULT_MODEL}`.")
+    return names[0]  # the default isn't installed here; don't refuse to start over it

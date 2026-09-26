@@ -37,11 +37,14 @@ acc ask --no-save "..."      # don't keep it as a session
 acc skills [NAME]            acc models
 ```
 
-`acc serve` opens your sessions in the browser at `http://127.0.0.1:8765/` (`--port N` picks
-another port, `--no-open` skips opening a window). For now it is read-only: a searchable list of
-sessions, and each conversation with its replies rendered as markdown, reasoning folded away and
-attached files named. It listens only on this machine and answers only to `127.0.0.1` or
-`localhost`, so a web page elsewhere can't read your sessions through it.
+`acc serve` opens a chat in the browser at `http://127.0.0.1:8765/` (`--port N` picks another
+port, `--no-open` skips opening a window). The sidebar lists your sessions, with search; **New
+chat** starts one with the default model. Enter sends and Shift-Enter starts a new line; pasted
+text keeps its line breaks. Replies stream in rendered as markdown, with reasoning folded away;
+**Stop** keeps the partial reply, as Ctrl-C does, and **Retry** asks again after a reply failed
+or was stopped. Paths named in a message are attached as they are in the terminal. It listens
+only on this machine, answers only to `127.0.0.1` or `localhost`, and accepts changes only from
+its own page, so a web page elsewhere can neither read your sessions nor send messages through it.
 
 Inside a chat, `/help` lists the commands: session management (`/new /sessions /rename
 /title /fork /delete /export`), skills (`/skills`), prompt (`/system`, `/context`, `/files`),

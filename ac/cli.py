@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, config, files, picker, render, server, skills, titles
-from .ollama import Client, OllamaError, resolve_model
+from .ollama import Client, OllamaError, pick_model, resolve_model
 from .repl import Repl, setup_readline
 from .statusbar import StatusBar
 from .store import Store, StoreError
@@ -20,19 +20,6 @@ def open_store(path=None):
     store = Store(path or config.db_path())
     _open_stores.append(store)
     return store
-
-
-def pick_model(client, requested=None):
-    """Model for a new session: -m, then $AC_MODEL, then the built-in default."""
-    name = requested or config.model_override()
-    if name:
-        return resolve_model(client, name)
-    names = [m["name"] for m in client.list_models()]
-    if config.DEFAULT_MODEL in names:
-        return config.DEFAULT_MODEL
-    if not names:
-        raise OllamaError(f"no models installed. Try `ollama pull {config.DEFAULT_MODEL}`.")
-    return names[0]  # the default isn't installed here; don't refuse to start over it
 
 
 def _interactive(store, client, session):

@@ -1,8 +1,8 @@
-"""A local web server for reading sessions in the browser: `acc serve`.
+"""A local web server for chatting in the browser: `acc serve`.
 
 It listens on 127.0.0.1 only and answers only requests addressed to it by that name, since it
-can read every session (and, later, files). Each request opens its own connection to the
-database, so the server can answer several at once.
+can read every session and the files a message names. Each request opens its own connection
+to the database, so the server can answer several at once.
 """
 
 import json
@@ -12,11 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import config
-from .store import Ambiguous, NotFound, Store
+from . import config, files, skills
+from .ollama import Client, OllamaError, pick_model
+from .repl import RESERVED_OPTIONS, build_messages
+from .store import Ambiguous, NotFound, Store, StoreError, first_message_title
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+MAX_BODY = 1 << 20
 
 
 def session_json(s):
@@ -35,8 +38,102 @@ def message_json(m):
                             for a in m.attachments]}
 
 
+class BadRequest(Exception):
+    pass
+
+
+def chat(store, client, request):
+    """One turn, as events for the page: the session, the user's message, the reply as it
+    streams, then the saved reply. {"session": ID?, "text": ..., "model": ...?} sends a
+    message, starting a new session when no id is given; {"session": ID, "retry": true} asks
+    again for the reply to the last message.
+
+    Closing the generator mid-reply is the page going away: the partial reply is kept, marked
+    interrupted, as Ctrl-C keeps it in the terminal.
+    """
+    text = str(request.get("text") or "").strip()
+    retry = bool(request.get("retry"))
+    if not retry and not text:
+        raise BadRequest("nothing to send")
+    if request.get("session"):
+        session = store.get(str(request["session"]))
+    elif retry:
+        raise BadRequest("nothing to retry: no session given")
+    else:
+        session = store.draft(pick_model(client, request.get("model") or None))
+
+    if retry:
+        messages = store.messages(session.id)
+        if messages and messages[-1].role == "assistant":
+            store.delete_messages_from(session.id, messages[-1].seq)
+            messages.pop()
+        if not messages or messages[-1].role != "user":
+            raise BadRequest("nothing to retry")
+        yield {"type": "session", "session": session_json(store.get(session.id))}
+    else:
+        if not session.persisted:
+            session.title, session.title_source = first_message_title(text), "auto"
+            store.save(session)
+        attachments, problems = files.collect(text, store.resources())
+        yield {"type": "session", "session": session_json(store.get(session.id))}
+        for line in problems + files.announce(attachments):
+            yield {"type": "note", "text": line}
+        sent = store.add_message(session.id, "user", text, attachments=attachments)
+        yield {"type": "message", "message": message_json(sent)}
+
+    system, active, missing = skills.compose_system(session.system, session.skills)
+    for ref in missing:
+        yield {"type": "note", "text": f"skill '{skills.label(ref)}' can't be loaded; "
+                                       "continuing without it"}
+    history = store.messages(session.id)
+    images = sum(a.kind == "image" for m in history for a in m.attachments)
+    vision = not images or client.supports(session.model, "vision")
+    if not vision:
+        yield {"type": "note", "text": f"{session.model} can't see images; leaving {images} out"}
+
+    options = {k: v for k, v in session.options.items() if k not in RESERVED_OPTIONS}
+    content, thinking, stats, status, error = [], [], {}, "interrupted", None
+    try:
+        stream = client.chat(session.model, build_messages(system, history, vision),
+                             think=session.options.get("think"), options=options,
+                             keep_alive=session.options.get("keep_alive"))
+        try:
+            for kind, data in stream:
+                if kind == "done":
+                    stats = data
+                    continue
+                (thinking if kind == "thinking" else content).append(data)
+                yield {"type": kind, "text": data}
+            status = "complete"
+        finally:
+            stream.close()
+    except OllamaError as e:
+        status, error = "error", e
+    finally:
+        reply = None
+        if content or thinking:
+            total_ns = stats.get("total_duration")
+            reply = store.add_message(
+                session.id, "assistant", "".join(content), thinking="".join(thinking) or None,
+                status=status, model=session.model,
+                skills=[{"name": k.name, "sha": k.sha} for k in active],
+                prompt_tokens=stats.get("prompt_eval_count"), eval_tokens=stats.get("eval_count"),
+                duration_ms=total_ns // 1_000_000 if total_ns else None)
+    if reply is not None:
+        yield {"type": "message", "message": message_json(reply)}
+    if error is not None:
+        yield {"type": "error", "text": str(error)}
+    else:
+        used = None
+        if stats.get("prompt_eval_count") is not None:
+            used = stats["prompt_eval_count"] + stats.get("eval_count", 0)
+        yield {"type": "done", "used": used,
+               "context": client.context_length(session.model)}
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = None      # set by make_server
+    client = None
     quiet = True
 
     def log_message(self, format, *args):
@@ -60,6 +157,65 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             store.close()
 
+    def do_POST(self):
+        if not self._host_ok() or not self._same_origin():
+            return self._error(403, "forbidden")
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+            return self._error(415, "send JSON")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 < length <= MAX_BODY:
+            return self._error(400, "bad request body")
+        try:
+            request = json.loads(self.rfile.read(length))
+        except ValueError:
+            return self._error(400, "bad JSON")
+        if not isinstance(request, dict):
+            return self._error(400, "bad JSON")
+        if urlsplit(self.path).path != "/api/chat":
+            return self._error(404, "not found")
+        store = Store(self.db_path)
+        try:
+            self._chat(store, request)
+        finally:
+            store.close()
+
+    def _chat(self, store, request):
+        events = chat(store, self.client, request)
+        try:
+            first = next(events)
+        except StopIteration:
+            return self._error(500, "no reply")
+        except BadRequest as e:
+            return self._error(400, str(e))
+        except (NotFound, Ambiguous) as e:
+            return self._error(404, str(e))
+        except (StoreError, OllamaError) as e:
+            return self._error(502 if isinstance(e, OllamaError) else 400, str(e))
+        # Events go out as JSON lines while the reply streams; the connection's end ends them.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            self._event(first)
+            for event in events:
+                self._event(event)
+        except (BrokenPipeError, ConnectionResetError):
+            events.close()          # the page went away: keep what came, marked interrupted
+        except (StoreError, OllamaError) as e:
+            try:
+                self._event({"type": "error", "text": str(e)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def _event(self, event):
+        self.wfile.write(json.dumps(event).encode() + b"\n")
+        self.wfile.flush()
+
     def _api(self, store, path, query):
         if path == "/sessions":
             search = (query.get("search") or [""])[0].strip() or None
@@ -77,6 +233,11 @@ class Handler(BaseHTTPRequestHandler):
         server through a hostname that it has pointed at 127.0.0.1."""
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
         return host in ("127.0.0.1", "localhost")
+
+    def _same_origin(self):
+        """A change must come from this server's own page, not from a form on another site."""
+        origin = self.headers.get("Origin")
+        return origin is None or urlsplit(origin).netloc == self.headers.get("Host")
 
     def _static(self, name):
         if "/" in name or name.startswith("."):
@@ -103,9 +264,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(port=DEFAULT_PORT, db_path=None, quiet=True):
+def make_server(port=DEFAULT_PORT, db_path=None, client=None, quiet=True):
     handler = type("BoundHandler", (Handler,),
-                   {"db_path": str(db_path or config.db_path()), "quiet": quiet})
+                   {"db_path": str(db_path or config.db_path()), "client": client or Client(),
+                    "quiet": quiet})
     Store(handler.db_path).close()      # create or upgrade the database before any request
     return ThreadingHTTPServer((HOST, port), handler)
 
@@ -113,7 +275,7 @@ def make_server(port=DEFAULT_PORT, db_path=None, quiet=True):
 def serve(port=DEFAULT_PORT, open_browser=True, say=print):
     server = make_server(port, quiet=False)
     url = f"http://{HOST}:{server.server_address[1]}/"
-    say(f"{config.COMMAND} is serving {url}  (Ctrl-C stops it)")
+    say(f"{config.COMMAND} is serving {url}  (Ctrl-C stops it)", flush=True)
     if open_browser:
         webbrowser.open(url)
     try:

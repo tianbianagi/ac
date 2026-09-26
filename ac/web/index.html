@@ -25,7 +25,14 @@ body { background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); d
 #sidebar { width: 300px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
            display: flex; flex-direction: column; min-height: 0; }
 #sidebar header { padding: 14px 14px 10px; }
-#sidebar h1 { font-size: 15px; margin: 0 0 10px; color: var(--accent); letter-spacing: .02em; }
+#sidebar .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+#sidebar h1 { font-size: 15px; margin: 0; color: var(--accent); letter-spacing: .02em; }
+button { font: inherit; cursor: pointer; }
+.btn { border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 8px;
+       padding: 5px 12px; font-size: 13px; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn:disabled { opacity: .5; cursor: default; }
 #search { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
           background: var(--bg); color: var(--text); font: inherit; font-size: 14px; }
 #search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -47,6 +54,18 @@ body { background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); d
 #chat { flex: 1; overflow-y: auto; padding: 20px 24px 40px; }
 #chat .inner { max-width: 780px; margin: 0 auto; }
 .placeholder { color: var(--muted); text-align: center; margin-top: 20vh; }
+.note { font-size: 13px; color: var(--muted); margin: -12px 0 18px; }
+.note.error { color: var(--warn); }
+.note .btn { margin-left: 8px; }
+.msg.pending .body:empty::after { content: "…"; color: var(--muted); }
+
+#composer { border-top: 1px solid var(--line); padding: 12px 24px 16px; }
+#composer form { max-width: 780px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
+#input { flex: 1; resize: none; min-height: 42px; max-height: 40vh; padding: 10px 12px;
+         border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--text);
+         font: inherit; line-height: 1.45; }
+#input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#composer .btn { padding: 10px 16px; font-size: 14px; }
 
 .msg { margin: 0 0 22px; }
 .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
@@ -80,14 +99,14 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
   body.reading #main { display: flex; }
   #back { display: inline; background: none; border: 0; color: var(--accent); font: inherit;
           padding: 0; margin-bottom: 4px; cursor: pointer; }
-  #main > header, #chat { padding-left: 16px; padding-right: 16px; }
+  #main > header, #chat, #composer { padding-left: 16px; padding-right: 16px; }
 }
 </style>
 </head>
 <body>
 <nav id="sidebar">
   <header>
-    <h1>acc</h1>
+    <div class="top"><h1>acc</h1><button id="new" class="btn" type="button">New chat</button></div>
     <input id="search" type="search" placeholder="Search sessions" autocomplete="off">
   </header>
   <ul id="sessions"></ul>
@@ -98,7 +117,13 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
     <h2 id="title"></h2>
     <div id="meta" class="meta"></div>
   </header>
-  <div id="chat"><div class="inner"><p class="placeholder">Choose a session.</p></div></div>
+  <div id="chat"><div class="inner"></div></div>
+  <div id="composer">
+    <form id="send">
+      <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
+      <button id="go" class="btn primary" type="submit">Send</button>
+    </form>
+  </div>
 </main>
 <script>
 "use strict";
@@ -200,7 +225,8 @@ function markdown(src) {
 
 // -- sessions -------------------------------------------------------------------------------
 
-let current = null, searchTimer = null;
+let current = null, searchTimer = null, streaming = null, quietHash = false;
+const chat = () => $("#chat .inner");
 
 async function loadSessions() {
   const q = $("#search").value.trim();
@@ -219,6 +245,19 @@ function markCurrent() {
     a.toggleAttribute("aria-current", a.dataset.id === current);
 }
 
+function showHeader(session) {
+  if (!session) {
+    $("#title").textContent = "New chat";
+    $("#meta").textContent = "The first message starts the session.";
+    document.title = "acc";
+    return;
+  }
+  $("#title").textContent = session.title || "(untitled)";
+  document.title = `${session.title || session.id} · acc`;
+  const skills = session.skills.length ? session.skills.join(", ") : "none";
+  $("#meta").textContent = `${session.id} · ${session.model} · skills: ${skills}`;
+}
+
 function renderMessage(m) {
   const who = m.role === "user" ? names.user : m.role === "assistant" ? names.assistant : m.role;
   const status = m.status !== "complete" ? el("span", { class: "status" }, ` · ${m.status}`) : null;
@@ -235,44 +274,193 @@ function renderMessage(m) {
             el("div", { class: "who" }, who, status), thinking, body, files);
 }
 
+function note(text, kind = "") {
+  const node = el("p", { class: `note ${kind}` }, text);
+  chat().append(node);
+  return node;
+}
+
+// The last message is a question with no good answer yet: offer to ask again.
+function offerRetry(messages) {
+  const last = messages[messages.length - 1];
+  if (!last || !(last.role === "user" || last.status !== "complete")) return;
+  const why = last.role === "user" ? "No reply yet." : `The reply was ${last.status}.`;
+  const button = el("button", { class: "btn", type: "button" }, "Retry");
+  button.addEventListener("click", () => send({ retry: true }));
+  note(why).append(button);
+}
+
 async function openSession(id) {
+  if (streaming) return;
   current = id;
   markCurrent();
-  document.body.classList.toggle("reading", !!id);
-  const inner = $("#chat .inner");
-  if (!id) {
-    $("#title").textContent = ""; $("#meta").textContent = "";
-    inner.replaceChildren(el("p", { class: "placeholder" }, "Choose a session."));
+  document.body.classList.toggle("reading", id !== null);
+  if (!id || id === "new") {
+    current = null;
+    showHeader(null);
+    chat().replaceChildren(el("p", { class: "placeholder" }, "Start a new conversation."));
+    $("#input").focus();
     return;
   }
   try {
     const { session, messages } = await api("/sessions/" + encodeURIComponent(id));
     if (current !== id) return;
-    $("#title").textContent = session.title || "(untitled)";
-    document.title = `${session.title || session.id} · acc`;
-    const skills = session.skills.length ? session.skills.join(", ") : "none";
-    $("#meta").textContent = `${session.id} · ${session.model} · skills: ${skills}`;
-    inner.replaceChildren(...(messages.length ? messages.map(renderMessage)
-                                              : [el("p", { class: "placeholder" }, "No messages yet.")]));
-    $("#chat").scrollTop = $("#chat").scrollHeight;
+    showHeader(session);
+    chat().replaceChildren(...(messages.length ? messages.map(renderMessage)
+                                               : [el("p", { class: "placeholder" }, "No messages yet.")]));
+    offerRetry(messages);
+    scrollDown(true);
   } catch (e) {
     $("#title").textContent = "";
     $("#meta").textContent = "";
-    inner.replaceChildren(el("p", { class: "placeholder" }, e.message));
+    chat().replaceChildren(el("p", { class: "placeholder" }, e.message));
   }
 }
 
+function scrollDown(force) {
+  const box = $("#chat");
+  if (force || box.scrollHeight - box.scrollTop - box.clientHeight < 120) box.scrollTop = box.scrollHeight;
+}
+
+// -- sending --------------------------------------------------------------------------------
+
+function setStreaming(on) {
+  streaming = on;
+  $("#go").textContent = on ? "Stop" : "Send";
+  $("#go").classList.toggle("primary", !on);
+  $("#new").disabled = !!on;
+}
+
+// A reply being written: thinking and text grow as they arrive, drawn at most once a frame.
+function pendingReply() {
+  const body = el("div", { class: "body" });
+  const think = el("div", { class: "plain" });
+  const details = el("details", { class: "thinking", open: "" }, el("summary", {}, "Thinking"), think);
+  details.hidden = true;
+  const node = el("article", { class: "msg assistant pending" },
+                  el("div", { class: "who" }, names.assistant), details, body);
+  let content = "", thinking = "", queued = false;
+  const draw = () => {
+    queued = false;
+    think.textContent = thinking;
+    details.hidden = !thinking;
+    if (content) details.open = false;
+    body.innerHTML = markdown(content);
+    scrollDown();
+  };
+  return {
+    node,
+    add(kind, text) {
+      if (kind === "thinking") thinking += text; else content += text;
+      if (!queued) { queued = true; requestAnimationFrame(draw); }
+    },
+  };
+}
+
+async function send(request) {
+  const ctrl = new AbortController();
+  setStreaming(ctrl);
+  if (!current) chat().replaceChildren();
+  chat().querySelectorAll(".note").forEach((n) => { if (n.querySelector("button")) n.remove(); });
+  let reply = null, failed = false;
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session: current, ...request }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "session") {
+          if (current !== event.session.id) {
+            current = event.session.id;
+            quietHash = true;
+            location.hash = current;
+          }
+          showHeader(event.session);
+          loadSessions();
+        } else if (event.type === "note") {
+          note(event.text);
+        } else if (event.type === "message" && event.message.role === "user") {
+          chat().append(renderMessage(event.message));
+          reply = pendingReply();
+          chat().append(reply.node);
+          scrollDown(true);
+        } else if (event.type === "thinking" || event.type === "content") {
+          if (!reply) { reply = pendingReply(); chat().append(reply.node); }
+          reply.add(event.type, event.text);
+        } else if (event.type === "message") {
+          const done = renderMessage(event.message);
+          if (reply) reply.node.replaceWith(done); else chat().append(done);
+          reply = null;
+          scrollDown();
+        } else if (event.type === "error") {
+          failed = true;
+          note(event.text, "error");
+        } else if (event.type === "done" && event.used && event.context) {
+          $("#meta").textContent += ` · ${event.used.toLocaleString()} / ${event.context.toLocaleString()} tokens`;
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") { failed = true; note(e.message, "error"); }
+  } finally {
+    setStreaming(null);
+  }
+  if (ctrl.signal.aborted || failed) {
+    // What was kept is on the server now; show it as saved, with the offer to try again.
+    if (current) setTimeout(() => openSession(current), ctrl.signal.aborted ? 300 : 0);
+    else if (reply) reply.node.remove();
+  }
+  loadSessions();
+}
+
+function submit() {
+  if (streaming) { streaming.abort(); return; }
+  const input = $("#input"), text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  grow();
+  send({ text });
+}
+
+function grow() {
+  const input = $("#input");
+  input.style.height = "auto";
+  input.style.height = input.scrollHeight + 2 + "px";
+}
+
+$("#send").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+$("#input").addEventListener("input", grow);
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!streaming) submit(); }
+});
+$("#new").addEventListener("click", () => { location.hash = "new"; });
 $("#search").addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadSessions, 200);
 });
 $("#back").addEventListener("click", () => { location.hash = ""; });
-window.addEventListener("hashchange", () => openSession(location.hash.slice(1) || null));
+window.addEventListener("hashchange", () => {
+  if (quietHash) { quietHash = false; markCurrent(); return; }
+  openSession(location.hash.slice(1) || null);
+});
 
 (async () => {
   try { names = (await api("/config")).names; } catch {}
   await loadSessions();
-  openSession(location.hash.slice(1) || null);
+  openSession(location.hash.slice(1) || "new");
+  document.body.classList.toggle("reading", !!location.hash.slice(1));
 })();
 </script>
 </body>
