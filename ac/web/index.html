@@ -56,7 +56,13 @@ button { font: inherit; cursor: pointer; }
 .rename:hover { background: var(--panel); color: var(--accent); }
 .rename svg { width: 15px; height: 15px; }
 .rename[hidden] { display: none; }
-#sidebar footer { display: flex; justify-content: flex-end; padding: 8px; }
+#sidebar footer { display: flex; justify-content: flex-end; align-items: center; padding: 8px; }
+.archived-link { margin-right: auto; border: 0; background: none; color: var(--muted); font-size: 13px;
+                 padding: 6px 8px; border-radius: 6px; }
+.archived-link:hover { background: var(--user); color: var(--accent); }
+.archived-link[hidden], body.sidebar-collapsed .archived-link { display: none; }
+#sidebar .viewing { font-size: 12px; color: var(--muted); padding: 0 10px 6px; text-transform: uppercase;
+                    letter-spacing: .04em; }
 .edge { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
         border: 0; border-radius: 8px; background: none; color: var(--muted); }
 .edge:hover { background: var(--user); color: var(--accent); }
@@ -213,7 +219,8 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
   #main { display: none; }
   body.reading #sidebar { display: none; }
   body.reading #main { display: flex; }
-  #sidebar footer { display: none; }   /* one pane at a time here anyway: no rail */
+  #sidebar footer { justify-content: flex-start; }   /* one pane at a time here: no rail */
+  #sidebar-toggle { display: none; }
   body.sidebar-collapsed #sidebar { width: 100%; }
   body.sidebar-collapsed #sidebar header { display: block; }
   body.sidebar-collapsed #sessions { display: block; }
@@ -236,6 +243,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
     <button id="rail-search" class="edge" type="button" title="Search sessions" aria-label="Search sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></button>
   </div>
   <footer>
+    <button id="archived-link" class="archived-link" type="button" hidden></button>
     <button id="sidebar-toggle" class="edge" type="button" aria-controls="sidebar" aria-expanded="true"
             title="Collapse sessions (⌘B / Ctrl+B)" aria-label="Collapse sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
   </footer>
@@ -254,6 +262,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       <div id="skills-panel" class="panel" hidden></div>
       <span class="spacer"></span>
       <span id="session-actions">
+        <button id="archive-btn" class="btn icon" type="button" title="Archive" aria-label="Archive"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"></svg></button>
         <button id="export-btn" class="btn icon" type="button" title="Export" aria-label="Export" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></button>
         <button id="delete-btn" class="btn icon danger" type="button" title="Delete" aria-label="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg></button>
       </span>
@@ -403,16 +412,33 @@ let pending = [];                         // files to go with the next message: 
 let picked = [];                          // server paths to go with it: {path, label, detail}
 const chat = () => $("#chat .inner");
 
+let viewArchived = false;                  // the sidebar shows archived sessions instead
+
 async function loadSessions() {
   const q = $("#search").value.trim();
-  const { sessions } = await api("/sessions" + (q ? "?search=" + encodeURIComponent(q) : ""));
+  const params = new URLSearchParams();
+  if (q) params.set("search", q);
+  if (viewArchived) params.set("archived", "1");
+  const { sessions, archived_count } = await api("/sessions" + (params.size ? "?" + params : ""));
   const list = $("#sessions");
   list.replaceChildren(...sessions.map((s) => el("li", {},
     el("a", { href: "#" + s.id, "data-id": s.id },
        el("span", { class: "title" }, s.title || "(untitled)"),
        el("span", { class: "meta" }, `${when(s.updated_at)} · ${s.message_count} messages · ${s.model}`)))));
-  if (!sessions.length) list.append(el("li", { class: "empty" }, q ? "No sessions match." : "No sessions yet."));
+  if (viewArchived) list.prepend(el("li", { class: "viewing" }, "Archived"));
+  if (!sessions.length) list.append(el("li", { class: "empty" },
+    q ? "No sessions match." : viewArchived ? "Nothing archived." : "No sessions yet."));
+  const link = $("#archived-link");
+  link.hidden = !viewArchived && !archived_count;
+  link.textContent = viewArchived ? "‹ Active sessions" : "Archived";
+  $("#search").placeholder = viewArchived ? "Search archived" : "Search sessions";
   markCurrent();
+}
+
+function showArchived(on) {
+  viewArchived = on;
+  $("#search").value = "";
+  loadSessions();
 }
 
 function markCurrent() {
@@ -429,7 +455,7 @@ function showHeader(s) {
   } else {
     $("#title").textContent = s.title || "(untitled)";
     document.title = `${s.title || s.id} · acc`;
-    $("#meta").textContent = s.id;
+    $("#meta").textContent = s.id + (s.archived_at ? ` · archived ${when(s.archived_at)}` : "");
   }
   showControls();
 }
@@ -450,6 +476,13 @@ function showControls() {
   $("#model").value = chosen || "";
   $("#session-actions").hidden = !session;
   $("#rename-btn").hidden = !session;
+  if (session) {
+    const label = session.archived_at ? "Unarchive" : "Archive";
+    const b = $("#archive-btn");
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.innerHTML = session.archived_at ? ICONS.unarchive : ICONS.archive;
+  }
   const refs = session ? session.skills : draft.skills;
   $("#skills-btn").textContent = "Skills: " + (refs.length ? refs.map(skillName).join(", ") : "none");
   if (!$("#skills-panel").hidden) fillSkills();
@@ -878,7 +911,7 @@ function fileChip(a) {
     chip.replaceChildren(`Remove ${name} from this conversation? The file itself isn't touched.`, yes, no);
     const restore = () => { chip.classList.remove("asking"); chip.replaceChildren(...before); };
     no.addEventListener("click", restore);
-    no.focus();
+    no.focus({ preventScroll: true });
     yes.addEventListener("click", async () => {
       try {
         const res = await fetch(`/api/attachments/${a.id}`, { method: "DELETE" });
@@ -925,6 +958,8 @@ const ICON_SVG = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-w
 const ICONS = {
   copy: '<svg %SVG%><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>',
   copied: '<svg %SVG%><path d="M20 6 9 17l-5-5"/></svg>',
+  archive: '<svg %SVG%><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg>',
+  unarchive: '<svg %SVG%><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="m9 15 3-3 3 3"/><path d="M12 12v6"/></svg>',
   trash: '<svg %SVG%><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
 };
 for (const k in ICONS) ICONS[k] = ICONS[k].replace("%SVG%", ICON_SVG);
@@ -965,16 +1000,23 @@ function messageActions(m, article) {
     bar.replaceChildren(el("span", { class: "confirm" }, "Delete this message?"), yes, no);
     const restore = () => { bar.classList.remove("asking"); bar.replaceChildren(...before); };
     no.addEventListener("click", restore);
-    no.focus();
+    no.focus({ preventScroll: true });
     yes.addEventListener("click", async () => {
       try {
         const id = current;
         const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages/${m.seq}`, { method: "DELETE" });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || res.statusText);
+        // Taken out where it is: the view stays put rather than jumping to the end.
         article.remove();
         loadSessions();
-        await openSession(id);             // the rest as saved, with Retry offered if it now needs one
+        if (current !== id) return;
+        showHeader(data.session);
+        chat().querySelectorAll(".note").forEach((n) => { if (n.querySelector("button")) n.remove(); });
+        const { messages } = await api("/sessions/" + encodeURIComponent(id));
+        if (current !== id) return;
+        if (!messages.length) chat().replaceChildren(el("p", { class: "placeholder" }, "No messages yet."));
+        offerRetry(messages);              // if it now ends on a question with no answer
       } catch (e) {
         restore();
         note(e.message, "error");
@@ -1216,6 +1258,8 @@ showSidebar(!["collapsed", "hidden"].includes(remembered("acc.sidebar")));
 $("#model").addEventListener("change", () => change({ model: $("#model").value }));
 $("#skills-btn").addEventListener("click", () => { if (togglePanel("#skills-panel", "#skills-btn")) fillSkills(); });
 $("#export-btn").addEventListener("click", () => togglePanel("#export-panel", "#export-btn"));
+$("#archive-btn").addEventListener("click", () => { if (session) change({ archived: !session.archived_at }); });
+$("#archived-link").addEventListener("click", () => showArchived(!viewArchived));
 $("#export-panel").addEventListener("click", (e) => {
   const button = e.target.closest("button");
   if (!button) return;

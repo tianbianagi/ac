@@ -34,7 +34,7 @@ def session_json(s):
             "skills": s.skills,
             "system": s.system, "options": s.options, "parent_id": s.parent_id,
             "created_at": s.created_at, "updated_at": s.updated_at,
-            "message_count": s.message_count}
+            "archived_at": s.archived_at, "message_count": s.message_count}
 
 
 def message_json(m):
@@ -166,7 +166,8 @@ def match(word, names):
 
 def update_session(store, client, session, request):
     """Change a session's title, model or skills from {"title": ..., "model": NAME,
-    "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's."""
+    "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's.
+    ({"archived": true|false} is handled by the caller, once these have been saved.)"""
     if "title" in request:
         title = " ".join(str(request["title"] or "").split())
         if not title:
@@ -219,6 +220,8 @@ def chat(store, client, request):
         if not session.persisted:
             session.title, session.title_source = first_message_title(text), "auto"
             store.save(session)
+        if session.archived_at:             # a new message brings it back, as in a mail inbox
+            store.set_archived(session.id, False)
         names = store.resources()
         refs, picked_problems = path_refs(request.get("paths") or [], names)
         picked, picked_notes = files.read_refs(refs, already=uploaded)
@@ -429,7 +432,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, str(e))
         except OllamaError as e:
             return self._error(400, str(e))
-        store.save(session)
+        if request.keys() & {"title", "model", "skills"}:
+            store.save(session)             # archiving alone leaves its place in the list
+        if "archived" in request:
+            store.set_archived(session.id, bool(request["archived"]))
         return self._json({"session": session_json(store.get(session.id))})
 
     def _chat(self, store, request):
@@ -471,7 +477,10 @@ class Handler(BaseHTTPRequestHandler):
     def _api(self, store, path, query):
         if path == "/sessions":
             search = (query.get("search") or [""])[0].strip() or None
-            return self._json({"sessions": [session_json(s) for s in store.list(search=search)]})
+            archived = (query.get("archived") or [""])[0] in ("1", "true")
+            return self._json({
+                "sessions": [session_json(s) for s in store.list(search=search, archived=archived)],
+                "archived_count": store.archived_count()})
         if path.startswith("/sessions/"):
             session = store.get(unquote(path[len("/sessions/"):]))
             return self._json({"session": session_json(session),

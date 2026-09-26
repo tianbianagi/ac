@@ -210,6 +210,17 @@ class CliTest(unittest.TestCase):
         _, out, _ = self.ac("models")
         self.assertRegex(out, r"m2:latest\s+1B\s+Q4\s+0\.0 GB\s+completion, thinking")
 
+    def test_ls_leaves_archived_sessions_out(self):
+        store = self.store()
+        old, kept = (store.save(store.draft("m1", title=t)) for t in ("Old trip", "Kept"))
+        store.set_archived(old.id, True)
+        _, out, _ = self.ac("ls")
+        self.assertIn("Kept", out)
+        self.assertNotIn("Old trip", out)
+        _, out, _ = self.ac("ls", "--archived")
+        self.assertIn("Old trip", out)
+        self.assertNotIn("Kept", out)
+
     def test_config_dir_can_be_moved(self):
         moved = self.tmp / "elsewhere"
         write_skill(moved / "skills", "haiku", description="Poetry mode")

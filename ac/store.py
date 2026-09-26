@@ -84,8 +84,11 @@ CREATE TABLE resources (
 );
 """
 
+# When a session was archived: out of the lists, kept whole, and back with a new message.
+ARCHIVED_SCHEMA = "ALTER TABLE sessions ADD COLUMN archived_at TEXT;"
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
-MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA]
+MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA, ARCHIVED_SCHEMA]
 
 
 class StoreError(Exception):
@@ -113,6 +116,7 @@ class Session:
     forked_at_seq: int | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    archived_at: str | None = None
     message_count: int = 0
     persisted: bool = False
 
@@ -250,7 +254,7 @@ class Store:
             title_source=row["title_source"], system=row["system"],
             options=json.loads(row["options"]), skills=skills, parent_id=row["parent_id"],
             forked_at_seq=row["forked_at_seq"], created_at=row["created_at"],
-            updated_at=row["updated_at"], persisted=True,
+            updated_at=row["updated_at"], archived_at=row["archived_at"], persisted=True,
             message_count=row["message_count"] if "message_count" in keys else 0)
 
     _SELECT = """SELECT s.*, (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
@@ -274,24 +278,40 @@ class Store:
         return self._session(rows[0])
 
     def latest(self):
+        """The session most recently changed, leaving archived ones out."""
         row = self.db.execute(
-            self._SELECT + " ORDER BY s.updated_at DESC, s.rowid DESC LIMIT 1").fetchone()
+            self._SELECT + " WHERE s.archived_at IS NULL"
+            " ORDER BY s.updated_at DESC, s.rowid DESC LIMIT 1").fetchone()
         return self._session(row) if row else None
 
-    def list(self, search=None):
-        sql, params = self._SELECT, []
+    def list(self, search=None, archived=False):
+        """Sessions, most recent first: those not archived, or with archived=True only those
+        that are. A search matches titles and message text."""
+        sql = self._SELECT + (" WHERE s.archived_at IS NOT NULL" if archived
+                              else " WHERE s.archived_at IS NULL")
+        params = []
         if search:
             if self.fts:
-                sql += """ WHERE s.title LIKE ? OR s.id IN (
+                sql += """ AND (s.title LIKE ? OR s.id IN (
                                SELECT m.session_id FROM messages_fts f
-                               JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH ?)"""
+                               JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH ?))"""
                 params = [f"%{search}%", _fts_query(search)]
             else:
-                sql += """ WHERE s.title LIKE ? OR s.id IN (
-                               SELECT session_id FROM messages WHERE content LIKE ?)"""
+                sql += """ AND (s.title LIKE ? OR s.id IN (
+                               SELECT session_id FROM messages WHERE content LIKE ?))"""
                 params = [f"%{search}%", f"%{search}%"]
         sql += " ORDER BY s.updated_at DESC, s.rowid DESC"
         return [self._session(r) for r in self.db.execute(sql, params)]
+
+    def archived_count(self):
+        return self.db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE archived_at IS NOT NULL").fetchone()[0]
+
+    def set_archived(self, session_id, archived):
+        """Archive a session or bring it back. Its place in the list (updated_at) is kept."""
+        with self.db:
+            self.db.execute("UPDATE sessions SET archived_at = ? WHERE id = ?",
+                            (_now() if archived else None, session_id))
 
     def delete(self, session_id):
         with self.db:

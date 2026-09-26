@@ -487,5 +487,30 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([m.seq for m in self.store.messages(self.lisbon.id)], [3, 4, 5, 6])
 
 
+    def test_archive_and_bring_back(self):
+        status, body = self.post(f"/api/sessions/{self.soup.id}", {"archived": True})
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(body["session"]["archived_at"])
+        _, body = self.get("/api/sessions")
+        self.assertEqual(([s["id"] for s in body["sessions"]], body["archived_count"]), ([self.lisbon.id], 1))
+        _, body = self.get("/api/sessions?archived=1")
+        self.assertEqual([s["id"] for s in body["sessions"]], [self.soup.id])
+        _, body = self.get("/api/sessions?archived=1&search=leek")
+        self.assertEqual([s["id"] for s in body["sessions"]], [self.soup.id])
+        self.assertEqual(self.get(f"/api/sessions/{self.soup.id}")[0], 200)   # still opens
+        # A new message brings it back.
+        self.fake.reply("Leeks and potatoes.")
+        _, events = self.post("/api/chat", {"session": self.soup.id, "text": "Recipe?"})
+        self.assertIsNone(events[0]["session"]["archived_at"])
+        _, body = self.get("/api/sessions")
+        self.assertEqual((len(body["sessions"]), body["archived_count"]), (2, 0))
+        # And so does unarchiving, which, like archiving, keeps its place in the list.
+        before = self.store.get(self.lisbon.id).updated_at
+        self.post(f"/api/sessions/{self.lisbon.id}", {"archived": True})
+        self.assertEqual(self.store.get(self.lisbon.id).updated_at, before)
+        _, body = self.post(f"/api/sessions/{self.lisbon.id}", {"archived": False})
+        self.assertIsNone(body["session"]["archived_at"])
+
+
 if __name__ == "__main__":
     unittest.main()

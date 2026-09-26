@@ -60,7 +60,7 @@ def cmd_resume(args):
 
 def cmd_ls(args):
     store = open_store()
-    print(render.format_sessions(store.list(search=args.search),
+    print(render.format_sessions(store.list(search=args.search, archived=args.archived),
                                  render.Style(render.use_color(sys.stdout))))
 
 
@@ -278,6 +278,8 @@ def build_parser():
 
     p = add("ls", cmd_ls, "list sessions", aliases=["list"])
     p.add_argument("--search", metavar="QUERY", help="match titles and message text")
+    p.add_argument("--archived", action="store_true",
+                   help="list archived sessions instead (archive them in `acc serve`)")
 
     p = add("show", cmd_show, "print a session's transcript")
     p.add_argument("id")

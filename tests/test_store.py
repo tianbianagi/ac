@@ -167,6 +167,36 @@ class StoreTest(unittest.TestCase):
         self.assertEqual([x.id for x in self.store.list(search="bet")], [b.id])
         self.assertEqual(self.store.list(search='"quoted" AND (weird'), [])  # no FTS syntax error
 
+    def test_archive(self):
+        old, kept = self.make("old trip"), self.make("kept")
+        self.store.add_message(old.id, "user", "Lisbon in May")
+        self.store.set_archived(old.id, True)
+        self.assertEqual([s.id for s in self.store.list()], [kept.id])
+        self.assertEqual([s.id for s in self.store.list(archived=True)], [old.id])
+        self.assertEqual(self.store.list(search="lisbon"), [])     # search stays in its list
+        self.assertEqual([s.id for s in self.store.list(search="lisbon", archived=True)], [old.id])
+        self.assertEqual(self.store.archived_count(), 1)
+        self.assertEqual(self.store.latest().id, kept.id)          # acc -c skips it
+        got = self.store.get(old.id)                               # but it can still be opened
+        self.assertIsNotNone(got.archived_at)
+        got.title = "renamed"
+        self.store.save(got)                                       # saving keeps it archived
+        self.assertIsNotNone(self.store.get(old.id).archived_at)
+        self.store.set_archived(old.id, False)
+        self.assertIsNone(self.store.get(old.id).archived_at)
+        self.assertEqual({s.id for s in self.store.list()}, {old.id, kept.id})
+
+    def test_delete_one_message(self):
+        s = self.make()
+        for text in ("a", "b", "c"):
+            self.store.add_message(s.id, "user", text,
+                                   attachments=[Attachment(path=f"/{text}", kind="text", content=text)])
+        self.store.delete_message(s.id, 2)
+        self.assertEqual([(m.seq, m.content) for m in self.store.messages(s.id)], [(1, "a"), (3, "c")])
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM attachments").fetchone()[0], 2)
+        with self.assertRaises(NotFound):
+            self.store.delete_message(s.id, 2)
+
     def test_search_follows_deleted_messages(self):
         s = self.make()
         self.store.add_message(s.id, "user", "keep")

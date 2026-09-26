@@ -24,7 +24,7 @@ acc -c                       # continue the latest session
 acc resume                   # pick a session from a list: type to filter, arrows, Enter
 acc resume ID                # ...or name one: id, unique id prefix, or exact title
 
-acc ls [--search QUERY]      # full-text search over titles and messages
+acc ls [--search QUERY] [--archived]   # full-text search over titles and messages
 acc show ID                  acc rename ID TITLE
 acc fork ID [--at SEQ]       acc rm ID... [-y]
 acc set ID [-m MODEL] [--system TEXT] [--think on|off] [-o temperature=0.2] [--add-skill NAME]
@@ -43,7 +43,7 @@ starts a new chat with the default model. Enter sends and Shift-Enter starts a n
 text keeps its line breaks. Replies stream in rendered as markdown, with reasoning folded away;
 **Stop** keeps the partial reply, as Ctrl-C does, and **Retry** asks again after a reply failed
 or was stopped. Attach files with the upload button, by dropping them on the chat, or by pasting an image; they are read as the terminal reads them (text, PDFs, images for models that can see), and attached images show in the conversation. The folder button picks files on the machine running `acc serve`, however you reach it: browse folders from your home, filter, and tick as many files as you like; ticking a folder takes everything in it, as `folder/**` would (hidden, ignored and binary files stay out). The box under the list holds everything queued, one path per line, and follows your ticks; edit it and press Enter to queue a path, a pattern such as `~/notes/**/*.md` or one of your `@names`, or delete a line to unqueue it. Paths named in a message are attached as well. The × on a sent file takes it out of the conversation, so the model stops seeing it from the next message on; the file itself is never touched. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
-Hovering a message shows copy (the text as written, markdown for a reply) and delete, which takes just that message and its files out of the conversation. The pencil beside the title (or a double-click on it) renames the open session; the export and delete icons at the top right act on it too. Export
+Hovering a message shows copy (the text as written, markdown for a reply) and delete, which takes just that message and its files out of the conversation. The pencil beside the title (or a double-click on it) renames the open session; the archive, export and delete icons at the top right act on it too. Archiving takes a session out of the list without deleting it: **Archived** at the bottom of the list shows those, a new message brings one back, and `acc ls --archived` lists them in the terminal, where `acc ls`, `acc -c` and the session pickers leave them out. Export
 saves `DATE TITLE.md` into your export folder or downloads it; like `/export`, it
 first has the model name a session that still carries its first message as its title. It listens
 only on this machine, answers only to `127.0.0.1` or `localhost`, and accepts changes only from
