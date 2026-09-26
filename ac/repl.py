@@ -1061,10 +1061,34 @@ class _Progress:
         self.repl.refresh(note)
 
 
+def pasting():
+    """Is more input already waiting, i.e. was the line just read part of a paste?
+
+    Called right after a line is read. Line editing hands the terminal back echoing, with
+    pending input set to be typed out again, so the rest of a paste would show twice; and in
+    line mode a last pasted line without its newline yet doesn't count as waiting. So the
+    check runs with echo and line mode off, and the terminal goes back as it was once nothing
+    is waiting."""
+    try:
+        import termios
+        fd = sys.stdin.fileno()
+        cooked = termios.tcgetattr(fd)
+    except (ImportError, OSError, ValueError):
+        return bool(select.select([sys.stdin], [], [], 0.02)[0])
+    quiet = termios.tcgetattr(fd)
+    quiet[3] &= ~(termios.ICANON | termios.ECHO | termios.PENDIN)
+    quiet[6][termios.VMIN], quiet[6][termios.VTIME] = 1, 0
+    termios.tcsetattr(fd, termios.TCSANOW, quiet)
+    waiting = bool(select.select([sys.stdin], [], [], 0.02)[0])
+    if not waiting:
+        termios.tcsetattr(fd, termios.TCSANOW, cooked)
+    return waiting
+
+
 def setup_readline(repl):
     """Line editing, persistent input history, tab completion and paste detection for an
     interactive REPL."""
-    repl.pasting = lambda: bool(select.select([sys.stdin], [], [], 0.02)[0])
+    repl.pasting = pasting
     try:
         import readline
     except ImportError:
