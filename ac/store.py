@@ -364,13 +364,14 @@ class Store:
                 (session_id, seq, role, content, thinking, status, model,
                  json.dumps(skills) if skills is not None else None,
                  prompt_tokens, eval_tokens, duration_ms, now))
-            self.db.executemany(
-                """INSERT INTO attachments (message_id, position, path, kind, content, data, note)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                [(cur.lastrowid, i, a.path, a.kind, a.content, a.data, a.note)
-                 for i, a in enumerate(attachments)])
+            message_id = cur.lastrowid
+            for i, a in enumerate(attachments):
+                a.id = self.db.execute(
+                    """INSERT INTO attachments (message_id, position, path, kind, content, data, note)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (message_id, i, a.path, a.kind, a.content, a.data, a.note)).lastrowid
             self.db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
-        return Message(id=cur.lastrowid, session_id=session_id, seq=seq, role=role,
+        return Message(id=message_id, session_id=session_id, seq=seq, role=role,
                        content=content, thinking=thinking, status=status, model=model,
                        skills=skills, prompt_tokens=prompt_tokens, eval_tokens=eval_tokens,
                        duration_ms=duration_ms, created_at=now, attachments=list(attachments))
@@ -388,6 +389,13 @@ class Store:
         return [Message(**{**dict(r), "skills": json.loads(r["skills"]) if r["skills"] else None,
                            "attachments": attached.get(r["id"], [])})
                 for r in rows]
+
+    def attachment(self, attachment_id):
+        row = self.db.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        if row is None:
+            raise NotFound(f"no attachment {attachment_id}")
+        return Attachment(path=row["path"], kind=row["kind"], content=row["content"],
+                          data=row["data"], note=row["note"], id=row["id"])
 
     def delete_attachment(self, attachment_id):
         """Take one file out of a conversation. The message it came with stays."""

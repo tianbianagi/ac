@@ -51,6 +51,18 @@ button { font: inherit; cursor: pointer; }
 #main > header h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
 #main > header .meta { font-size: 13px; color: var(--muted); }
 #back { display: none; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; position: relative; }
+select.btn { padding-right: 8px; max-width: 100%; }
+#skills-panel { position: absolute; top: 100%; left: 0; z-index: 5; margin-top: 4px; min-width: 260px;
+                max-width: min(420px, calc(100vw - 32px)); max-height: 50vh; overflow-y: auto;
+                background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, .12); padding: 6px; }
+#skills-panel label { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px;
+                      border-radius: 6px; cursor: pointer; font-size: 14px; }
+#skills-panel label:hover { background: var(--panel); }
+#skills-panel input { margin-top: 4px; accent-color: var(--accent); }
+#skills-panel small { display: block; color: var(--muted); font-size: 12px; }
+#skills-panel .empty { padding: 6px 8px; color: var(--muted); font-size: 13px; }
 #chat { flex: 1; overflow-y: auto; padding: 20px 24px 40px; }
 #chat .inner { max-width: 780px; margin: 0 auto; }
 .placeholder { color: var(--muted); text-align: center; margin-top: 20vh; }
@@ -66,6 +78,16 @@ button { font: inherit; cursor: pointer; }
          font: inherit; line-height: 1.45; }
 #input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 #composer .btn { padding: 10px 16px; font-size: 14px; }
+#composer .btn.attach { padding: 10px 12px; }
+#pending { max-width: 780px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+#pending:empty { display: none; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono);
+        background: var(--code); border: 1px solid var(--line); padding: 3px 4px 3px 8px; border-radius: 6px; }
+.chip button { border: 0; background: none; color: var(--muted); padding: 0 4px; font-size: 14px; line-height: 1; }
+.chip button:hover { color: var(--warn); }
+.thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.thumbs img { max-width: 220px; max-height: 180px; border-radius: 8px; border: 1px solid var(--line); }
+body.dragging #chat { outline: 2px dashed var(--accent); outline-offset: -8px; }
 
 .msg { margin: 0 0 22px; }
 .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
@@ -116,10 +138,18 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
     <button id="back" type="button">‹ Sessions</button>
     <h2 id="title"></h2>
     <div id="meta" class="meta"></div>
+    <div class="controls">
+      <select id="model" class="btn" aria-label="Model"></select>
+      <button id="skills-btn" class="btn" type="button" aria-expanded="false">Skills: none</button>
+      <div id="skills-panel" hidden></div>
+    </div>
   </header>
   <div id="chat"><div class="inner"></div></div>
   <div id="composer">
+    <div id="pending"></div>
     <form id="send">
+      <button id="attach" class="btn attach" type="button" title="Attach files" aria-label="Attach files">+</button>
+      <input id="file" type="file" multiple hidden>
       <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
       <button id="go" class="btn primary" type="submit">Send</button>
     </form>
@@ -226,6 +256,10 @@ function markdown(src) {
 // -- sessions -------------------------------------------------------------------------------
 
 let current = null, searchTimer = null, streaming = null, quietHash = false;
+let session = null;                       // the open session, as the server last described it
+let models = [], allSkills = [];
+const draft = { model: "", skills: [] };  // choices for a new chat, until its first message
+let pending = [];                         // files to go with the next message: {name, data, size}
 const chat = () => $("#chat .inner");
 
 async function loadSessions() {
@@ -245,17 +279,119 @@ function markCurrent() {
     a.toggleAttribute("aria-current", a.dataset.id === current);
 }
 
-function showHeader(session) {
-  if (!session) {
+function showHeader(s) {
+  session = s;
+  if (!s) {
     $("#title").textContent = "New chat";
     $("#meta").textContent = "The first message starts the session.";
     document.title = "acc";
-    return;
+  } else {
+    $("#title").textContent = s.title || "(untitled)";
+    document.title = `${s.title || s.id} · acc`;
+    $("#meta").textContent = s.id;
   }
-  $("#title").textContent = session.title || "(untitled)";
-  document.title = `${session.title || session.id} · acc`;
-  const skills = session.skills.length ? session.skills.join(", ") : "none";
-  $("#meta").textContent = `${session.id} · ${session.model} · skills: ${skills}`;
+  showControls();
+}
+
+// -- model and skills -------------------------------------------------------------------------
+
+const skillName = (ref) => ref.replace(/\/SKILL\.md$/, "").split("/").pop().replace(/\.md$/, "");
+
+function showControls() {
+  const chosen = session ? session.model : draft.model;
+  const names = models.map((m) => m.name);
+  const options = [];
+  if (!session) options.push(el("option", { value: "" }, "Default model"));
+  if (chosen && !names.includes(chosen)) options.push(el("option", { value: chosen }, `${chosen} (not installed)`));
+  for (const m of models)
+    options.push(el("option", { value: m.name }, m.parameter_size ? `${m.name} · ${m.parameter_size}` : m.name));
+  $("#model").replaceChildren(...options);
+  $("#model").value = chosen || "";
+  const refs = session ? session.skills : draft.skills;
+  $("#skills-btn").textContent = "Skills: " + (refs.length ? refs.map(skillName).join(", ") : "none");
+  if (!$("#skills-panel").hidden) fillSkills();
+}
+
+async function change(update) {
+  if (!session) {
+    Object.assign(draft, update);
+    return showControls();
+  }
+  try {
+    const res = await fetch("/api/sessions/" + encodeURIComponent(session.id), {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(update),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    showHeader(data.session);
+    loadSessions();
+  } catch (e) {
+    showControls();
+    note(e.message, "error");
+  }
+}
+
+function fillSkills() {
+  const refs = session ? session.skills : draft.skills;
+  const attached = new Set(refs.map(skillName));
+  const known = allSkills.map((s) => s.name);
+  const rows = [...allSkills, ...refs.filter((r) => !known.includes(skillName(r)))
+                                     .map((r) => ({ name: skillName(r), ref: r, description: "not on the skills path" }))];
+  const panel = $("#skills-panel");
+  panel.replaceChildren(...rows.map((s) => {
+    const box = el("input", { type: "checkbox" });
+    box.checked = attached.has(s.name);
+    box.addEventListener("change", () => {
+      const ref = s.ref || s.name;
+      const next = box.checked ? [...refs, ref] : refs.filter((r) => skillName(r) !== s.name);
+      change({ skills: next });
+    });
+    return el("label", {}, box, el("span", {}, s.name, s.description ? el("small", {}, s.description) : null));
+  }));
+  if (!rows.length) panel.append(el("div", { class: "empty" }, "No skills yet. Add them to ~/accspace/config/skills."));
+}
+
+async function loadChoices() {
+  try { models = (await api("/models")).models; } catch (e) { models = []; }
+  try { allSkills = (await api("/skills")).skills; } catch (e) { allSkills = []; }
+  showControls();
+}
+
+// -- files to attach ------------------------------------------------------------------------
+
+const MAX_UPLOAD = 40 * 1024 * 1024;
+
+function size(n) {
+  return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function showPending() {
+  $("#pending").replaceChildren(...pending.map((f, i) => {
+    const drop = el("button", { type: "button", title: "Remove", "aria-label": `Remove ${f.name}` }, "×");
+    drop.addEventListener("click", () => { pending.splice(i, 1); showPending(); });
+    return el("span", { class: "chip" }, `${f.name} · ${size(f.size)}`, drop);
+  }));
+}
+
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addFiles(list) {
+  for (const file of list) {
+    const total = pending.reduce((n, f) => n + f.size, 0) + file.size;
+    if (total > MAX_UPLOAD) { note(`${file.name} is too large: one message takes up to ${size(MAX_UPLOAD)} of files`, "error"); continue; }
+    const name = file.name || `pasted-${Date.now()}.${(file.type.split("/")[1] || "bin")}`;
+    try { pending.push({ name, size: file.size, data: await readFile(file) }); }
+    catch (e) { note(`can't read ${name}: ${e.message}`, "error"); }
+  }
+  showPending();
+  $("#input").focus();
 }
 
 function renderMessage(m) {
@@ -270,8 +406,12 @@ function renderMessage(m) {
   const files = m.attachments.length
     ? el("div", { class: "files" }, ...m.attachments.map((a) => el("span", { title: a.note || a.kind }, a.path)))
     : null;
+  const pictures = m.attachments.filter((a) => a.kind === "image" && a.id != null);
+  const thumbs = pictures.length
+    ? el("div", { class: "thumbs" }, ...pictures.map((a) => el("img", { src: `/api/attachments/${a.id}`, alt: a.path, loading: "lazy" })))
+    : null;
   return el("article", { class: `msg ${m.role}` },
-            el("div", { class: "who" }, who, status), thinking, body, files);
+            el("div", { class: "who" }, who, status), thinking, body, files, thumbs);
 }
 
 function note(text, kind = "") {
@@ -362,11 +502,13 @@ async function send(request) {
   setStreaming(ctrl);
   if (!current) chat().replaceChildren();
   chat().querySelectorAll(".note").forEach((n) => { if (n.querySelector("button")) n.remove(); });
-  let reply = null, failed = false;
+  let reply = null, failed = false, sent = false;
+  const body = { session: current, ...request };
+  if (!current) Object.assign(body, { model: draft.model || null, skills: draft.skills });
   try {
     const res = await fetch("/api/chat", {
       method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session: current, ...request }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error((await res.json()).error || res.statusText);
     const reader = res.body.getReader(), decoder = new TextDecoder();
@@ -392,6 +534,7 @@ async function send(request) {
         } else if (event.type === "note") {
           note(event.text);
         } else if (event.type === "message" && event.message.role === "user") {
+          sent = true;
           chat().append(renderMessage(event.message));
           reply = pendingReply();
           chat().append(reply.node);
@@ -417,6 +560,11 @@ async function send(request) {
   } finally {
     setStreaming(null);
   }
+  if (!sent && request.text !== undefined) {
+    // It never arrived: give the message and its files back rather than lose them.
+    if (!$("#input").value.trim()) { $("#input").value = request.text; grow(); }
+    if (!pending.length && request.files) { pending = request.files; showPending(); }
+  }
   if (ctrl.signal.aborted || failed) {
     // What was kept is on the server now; show it as saved, with the offer to try again.
     if (current) setTimeout(() => openSession(current), ctrl.signal.aborted ? 300 : 0);
@@ -428,10 +576,16 @@ async function send(request) {
 function submit() {
   if (streaming) { streaming.abort(); return; }
   const input = $("#input"), text = input.value.trim();
-  if (!text) return;
+  if (!text) {
+    if (pending.length) note("Add a few words to go with the files.");
+    return;
+  }
   input.value = "";
   grow();
-  send({ text });
+  const files = pending;
+  pending = [];
+  showPending();
+  send({ text, files });
 }
 
 function grow() {
@@ -446,6 +600,33 @@ $("#input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!streaming) submit(); }
 });
 $("#new").addEventListener("click", () => { location.hash = "new"; });
+$("#model").addEventListener("change", () => change({ model: $("#model").value }));
+$("#skills-btn").addEventListener("click", () => {
+  const panel = $("#skills-panel");
+  panel.hidden = !panel.hidden;
+  $("#skills-btn").setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden) fillSkills();
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".controls")) { $("#skills-panel").hidden = true; $("#skills-btn").setAttribute("aria-expanded", "false"); }
+});
+$("#attach").addEventListener("click", () => $("#file").click());
+$("#file").addEventListener("change", () => { addFiles([...$("#file").files]); $("#file").value = ""; });
+$("#input").addEventListener("paste", (e) => {
+  const list = [...(e.clipboardData?.files || [])];
+  if (list.length) { e.preventDefault(); addFiles(list); }
+});
+let dragDepth = 0;
+$("#main").addEventListener("dragenter", (e) => {
+  if (![...e.dataTransfer.types].includes("Files")) return;
+  e.preventDefault(); dragDepth++; document.body.classList.add("dragging");
+});
+$("#main").addEventListener("dragover", (e) => { if ([...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+$("#main").addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove("dragging"); } });
+$("#main").addEventListener("drop", (e) => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove("dragging");
+  addFiles([...e.dataTransfer.files]);
+});
 $("#search").addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadSessions, 200);
@@ -459,6 +640,7 @@ window.addEventListener("hashchange", () => {
 (async () => {
   try { names = (await api("/config")).names; } catch {}
   await loadSessions();
+  loadChoices();
   openSession(location.hash.slice(1) || "new");
   document.body.classList.toggle("reading", !!location.hash.slice(1));
 })();

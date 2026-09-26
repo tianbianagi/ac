@@ -1,3 +1,4 @@
+import base64
 import http.client
 import json
 import os
@@ -11,6 +12,8 @@ from ac import server
 from ac.ollama import Client
 from ac.store import Attachment, Store
 from tests.fake_ollama import FakeOllama
+from tests.make_pdf import make_pdf
+from tests.test_skills import write_skill
 
 
 class ServerTest(unittest.TestCase):
@@ -85,7 +88,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(body["session"]["id"], self.lisbon.id)
         user, reply = body["messages"]
         self.assertEqual(user["attachments"],
-                         [{"path": "/tmp/notes.md", "kind": "text", "note": None, "size": 2}])
+                         [{"id": 1, "path": "/tmp/notes.md", "kind": "text", "note": None,
+                           "size": 2}])
         self.assertEqual((reply["role"], reply["content"], reply["thinking"]),
                          ("assistant", "**Day 1**: Alfama", "hmm"))
 
@@ -200,6 +204,88 @@ class ServerTest(unittest.TestCase):
         status, _ = self.post("/api/chat", {"text": "hi"}, {"Content-Type": "text/plain"})
         self.assertEqual(status, 415)
         self.assertEqual(self.fake.requests, [])
+
+
+    # -- files, models and skills --------------------------------------------
+
+    def upload(self, name, data):
+        return {"name": name, "data": base64.b64encode(data).decode()}
+
+    def test_uploaded_files_go_with_the_message(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"\0" * 20
+        self.fake.capabilities.append("vision")
+        self.fake.reply("Got them.")
+        _, events = self.post("/api/chat", {
+            "session": self.soup.id, "text": "Look",
+            "files": [self.upload("recipe.txt", b"leeks, butter"),
+                      self.upload("../../photo.png", png),
+                      self.upload("recipe.txt", b"second copy")]})
+        user = next(e["message"] for e in events if e["type"] == "message")
+        self.assertEqual([(a["path"], a["kind"]) for a in user["attachments"]],
+                         [("recipe.txt", "text"), ("photo.png", "image"), ("recipe.txt", "text")])
+        sent = self.fake.requests[-1]["messages"][-1]
+        self.assertIn('<file path="recipe.txt">\nleeks, butter\n</file>', sent["content"])
+        self.assertIn("second copy", sent["content"])
+        self.assertEqual(sent["images"], [base64.b64encode(png).decode()])
+        # The picture can be shown again from the session.
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        self.addCleanup(conn.close)
+        conn.request("GET", f"/api/attachments/{user['attachments'][1]['id']}",
+                     headers={"Host": f"127.0.0.1:{self.port}"})
+        res = conn.getresponse()
+        self.assertEqual((res.status, res.getheader("Content-Type"), res.read()),
+                         (200, "image/png", png))
+        self.assertEqual(self.get(f"/api/attachments/{user['attachments'][0]['id']}")[0], 404)
+
+    def test_an_uploaded_pdf_sends_its_text(self):
+        self.fake.reply("Read it.")
+        _, events = self.post("/api/chat", {
+            "session": self.soup.id, "text": "Summarise",
+            "files": [self.upload("report.pdf", make_pdf(["Quarterly leeks up"]))]})
+        self.assertIn("Quarterly leeks up", self.fake.requests[-1]["messages"][-1]["content"])
+        notes = [e["text"] for e in events if e["type"] == "note"]
+        self.assertTrue(any(n.startswith("attached report.pdf (text") for n in notes), notes)
+
+    def test_an_upload_that_cant_be_read_is_reported(self):
+        self.fake.reply("ok")
+        _, events = self.post("/api/chat", {
+            "session": self.soup.id, "text": "hi",
+            "files": [self.upload("blob.bin", b"\0\1\2")]})
+        notes = [e["text"] for e in events if e["type"] == "note"]
+        self.assertIn("blob.bin isn't text, a PDF or an image, so it can't be attached", notes)
+        self.assertEqual(self.post("/api/chat", {"session": self.soup.id, "text": "hi",
+                                                 "files": [{"name": "x", "data": "!!"}]}),
+                         (400, {"error": "x didn't arrive intact"}))
+
+    def test_models_and_skills(self):
+        _, body = self.get("/api/models")
+        self.assertEqual([m["name"] for m in body["models"]], ["m1", "m2:latest"])
+        write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku", description="Poetry mode")
+        _, body = self.get("/api/skills")
+        self.assertEqual(body["skills"], [{"name": "haiku", "description": "Poetry mode"}])
+
+    def test_change_a_sessions_model_and_skills(self):
+        write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku")
+        status, body = self.post(f"/api/sessions/{self.soup.id}", {"model": "m1", "skills": ["haiku"]})
+        self.assertEqual(status, 200)
+        self.assertEqual((body["session"]["model"], body["session"]["skills"]), ("m1", ["haiku"]))
+        again = self.store.get(self.soup.id)
+        self.assertEqual((again.model, again.skills), ("m1", ["haiku"]))
+
+        status, body = self.post(f"/api/sessions/{self.soup.id}", {"skills": ["nope"]})
+        self.assertEqual(status, 400)
+        self.assertIn("no skill named 'nope'", body["error"])
+        status, body = self.post(f"/api/sessions/{self.soup.id}", {"model": "zzz"})
+        self.assertEqual(status, 400)
+        self.assertIn("model 'zzz' is not installed", body["error"])
+        self.assertEqual(self.store.get(self.soup.id).skills, ["haiku"])
+
+    def test_a_new_session_takes_its_skills(self):
+        write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku", body="Answer in haiku.")
+        self.fake.reply("Leaves fall")
+        _, events = self.post("/api/chat", {"text": "Autumn?", "model": "m1", "skills": ["haiku"]})
+        self.assertEqual(events[0]["session"]["skills"], ["haiku"])
+        self.assertIn("Answer in haiku.", self.fake.requests[-1]["messages"][0]["content"])
 
 
 if __name__ == "__main__":

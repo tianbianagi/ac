@@ -5,21 +5,27 @@ can read every session and the files a message names. Each request opens its own
 to the database, so the server can answer several at once.
 """
 
+import base64
+import binascii
 import json
 import mimetypes
+import tempfile
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from importlib import resources
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import config, files, skills
-from .ollama import Client, OllamaError, pick_model
+from .ollama import Client, OllamaError, pick_model, resolve_model
 from .repl import RESERVED_OPTIONS, build_messages
 from .store import Ambiguous, NotFound, Store, StoreError, first_message_title
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-MAX_BODY = 1 << 20
+MAX_BODY = 64 << 20     # a message with its uploads, base64 and all
+IMAGE_TYPES = [(b"\x89PNG", "image/png"), (b"\xff\xd8", "image/jpeg"), (b"GIF8", "image/gif"),
+               (b"RIFF", "image/webp")]
 
 
 def session_json(s):
@@ -34,12 +40,59 @@ def message_json(m):
             "status": m.status, "model": m.model, "skills": m.skills,
             "prompt_tokens": m.prompt_tokens, "eval_tokens": m.eval_tokens,
             "duration_ms": m.duration_ms, "created_at": m.created_at,
-            "attachments": [{"path": a.path, "kind": a.kind, "note": a.note, "size": a.size}
-                            for a in m.attachments]}
+            "attachments": [{"id": a.id, "path": a.path, "kind": a.kind, "note": a.note,
+                             "size": a.size} for a in m.attachments]}
 
 
 class BadRequest(Exception):
     pass
+
+
+def read_uploads(uploads):
+    """Attachments for files the page sent as {"name", "data" (base64)}, plus lines the user
+    should see. Each is read as the same file on disk would be, so a PDF gives its text (or
+    page images) and an image goes to the model as an image; it is known by its own name."""
+    if not isinstance(uploads, list):
+        raise BadRequest("files must be a list")
+    attachments, notes = [], []
+    with tempfile.TemporaryDirectory(prefix="acc-upload-") as tmp:
+        for i, upload in enumerate(uploads):
+            if not isinstance(upload, dict):
+                raise BadRequest("each file needs a name and data")
+            name = Path(str(upload.get("name") or f"file-{i + 1}")).name or f"file-{i + 1}"
+            try:
+                data = base64.b64decode(str(upload.get("data") or ""), validate=True)
+            except (binascii.Error, ValueError):
+                raise BadRequest(f"{name} didn't arrive intact") from None
+            folder = Path(tmp) / str(i)         # its own folder: two uploads may share a name
+            folder.mkdir()
+            path = folder / name
+            path.write_bytes(data)
+            try:
+                got, said = files.read_all(path)
+            except files.FileError as e:
+                notes.append(str(e).replace(str(folder) + "/", ""))
+                continue
+            for a in got:
+                a.path = a.path.replace(str(folder) + "/", "")
+            attachments += got
+            notes += [line.replace(str(folder) + "/", "") for line in said]
+    return attachments, notes
+
+
+def update_session(store, client, session, request):
+    """Change a session's model or skills from {"model": NAME, "skills": [REF, ...]}."""
+    if request.get("model"):
+        session.model = resolve_model(client, str(request["model"]))
+    if "skills" in request:
+        if not isinstance(request["skills"], list):
+            raise BadRequest("skills must be a list")
+        try:
+            session.skills = list(dict.fromkeys(skills.normalize_ref(str(r))
+                                                for r in request["skills"]))
+        except skills.SkillError as e:
+            raise BadRequest(str(e)) from None
+    return session
 
 
 def chat(store, client, request):
@@ -61,6 +114,8 @@ def chat(store, client, request):
         raise BadRequest("nothing to retry: no session given")
     else:
         session = store.draft(pick_model(client, request.get("model") or None))
+        update_session(store, client, session, {"skills": request.get("skills") or []})
+    uploaded, upload_notes = read_uploads(request.get("files") or []) if not retry else ([], [])
 
     if retry:
         messages = store.messages(session.id)
@@ -74,9 +129,10 @@ def chat(store, client, request):
         if not session.persisted:
             session.title, session.title_source = first_message_title(text), "auto"
             store.save(session)
-        attachments, problems = files.collect(text, store.resources())
+        found, problems = files.collect(text, store.resources())
+        attachments = uploaded + found
         yield {"type": "session", "session": session_json(store.get(session.id))}
-        for line in problems + files.announce(attachments):
+        for line in upload_notes + problems + files.announce(attachments):
             yield {"type": "note", "text": line}
         sent = store.add_message(session.id, "user", text, attachments=attachments)
         yield {"type": "message", "message": message_json(sent)}
@@ -174,13 +230,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, "bad JSON")
         if not isinstance(request, dict):
             return self._error(400, "bad JSON")
-        if urlsplit(self.path).path != "/api/chat":
-            return self._error(404, "not found")
+        path = urlsplit(self.path).path
         store = Store(self.db_path)
         try:
-            self._chat(store, request)
+            if path == "/api/chat":
+                return self._chat(store, request)
+            if path.startswith("/api/sessions/"):
+                return self._update(store, unquote(path[len("/api/sessions/"):]), request)
+            return self._error(404, "not found")
         finally:
             store.close()
+
+    def _update(self, store, ref, request):
+        try:
+            session = update_session(store, self.client, store.get(ref), request)
+        except (NotFound, Ambiguous) as e:
+            return self._error(404, str(e))
+        except BadRequest as e:
+            return self._error(400, str(e))
+        except OllamaError as e:
+            return self._error(400, str(e))
+        store.save(session)
+        return self._json({"session": session_json(store.get(session.id))})
 
     def _chat(self, store, request):
         events = chat(store, self.client, request)
@@ -192,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, str(e))
         except (NotFound, Ambiguous) as e:
             return self._error(404, str(e))
-        except (StoreError, OllamaError) as e:
+        except (StoreError, OllamaError, skills.SkillError) as e:
             return self._error(502 if isinstance(e, OllamaError) else 400, str(e))
         # Events go out as JSON lines while the reply streams; the connection's end ends them.
         self.send_response(200)
@@ -226,6 +297,28 @@ class Handler(BaseHTTPRequestHandler):
                                "messages": [message_json(m) for m in store.messages(session.id)]})
         if path == "/config":
             return self._json({"names": config.speaker_names()})
+        if path == "/models":
+            try:
+                models = self.client.list_models()
+            except OllamaError as e:
+                return self._error(502, str(e))
+            return self._json({"models": [
+                {"name": m["name"], "size": m.get("size"),
+                 "parameter_size": (m.get("details") or {}).get("parameter_size")}
+                for m in models]})
+        if path == "/skills":
+            return self._json({"skills": [{"name": s.name, "description": s.description}
+                                          for _, s in sorted(skills.discover().items())]})
+        if path.startswith("/attachments/"):
+            try:
+                a = store.attachment(int(path[len("/attachments/"):]))
+            except ValueError:
+                return self._error(404, "not found")
+            if a.kind != "image" or a.data is None:
+                return self._error(404, "not an image")
+            kind = next((t for magic, t in IMAGE_TYPES if a.data.startswith(magic)),
+                        "application/octet-stream")
+            return self._send(200, a.data, kind)
         return self._error(404, "not found")
 
     def _host_ok(self):

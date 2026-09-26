@@ -470,10 +470,12 @@ def display_path(path):
 
 
 def describe(attachment):
-    """One line for the user: where it is, what it is, and how big."""
+    """One line for the user: where it is, what it is, and how big. A file uploaded from the
+    browser has no place on disk, only its name, and is shown by that."""
+    where = display_path(attachment.path) if Path(attachment.path).is_absolute() else attachment.path
     detail = f"{attachment.kind}, {_size(attachment.size)}"
     note = f", {attachment.note}" if attachment.note else ""
-    return f"{display_path(attachment.path)} ({detail}{note})"
+    return f"{where} ({detail}{note})"
 
 
 def for_model(attachment):
