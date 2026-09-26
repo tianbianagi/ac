@@ -42,7 +42,10 @@ port, `--no-open` skips opening a window). The sidebar lists your sessions, with
 chat** starts one with the default model. Enter sends and Shift-Enter starts a new line; pasted
 text keeps its line breaks. Replies stream in rendered as markdown, with reasoning folded away;
 **Stop** keeps the partial reply, as Ctrl-C does, and **Retry** asks again after a reply failed
-or was stopped. Attach files with **+**, by dropping them on the chat, or by pasting an image; they are read as the terminal reads them (text, PDFs, images for models that can see), and attached images show in the conversation. Paths named in a message are attached too. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message. It listens
+or was stopped. Attach files with **+**, by dropping them on the chat, or by pasting an image; they are read as the terminal reads them (text, PDFs, images for models that can see), and attached images show in the conversation. Paths named in a message are attached too. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
+**Rename** (or double-click the title), **Export** and **Delete** act on the open session. Export
+saves `DATE TITLE.md` into your export folder or downloads markdown or JSON; like `/export`, it
+first has the model name a session that still carries its first message as its title. It listens
 only on this machine, answers only to `127.0.0.1` or `localhost`, and accepts changes only from
 its own page, so a web page elsewhere can neither read your sessions nor send messages through it.
 

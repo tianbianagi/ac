@@ -16,7 +16,7 @@ from pathlib import Path
 from importlib import resources
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import config, files, skills
+from . import config, files, render, skills, titles
 from .ollama import Client, OllamaError, pick_model, resolve_model
 from .repl import RESERVED_OPTIONS, build_messages
 from .store import Ambiguous, NotFound, Store, StoreError, first_message_title
@@ -29,7 +29,8 @@ IMAGE_TYPES = [(b"\x89PNG", "image/png"), (b"\xff\xd8", "image/jpeg"), (b"GIF8",
 
 
 def session_json(s):
-    return {"id": s.id, "title": s.title, "model": s.model, "skills": s.skills,
+    return {"id": s.id, "title": s.title, "title_source": s.title_source, "model": s.model,
+            "skills": s.skills,
             "system": s.system, "options": s.options, "parent_id": s.parent_id,
             "created_at": s.created_at, "updated_at": s.updated_at,
             "message_count": s.message_count}
@@ -81,7 +82,13 @@ def read_uploads(uploads):
 
 
 def update_session(store, client, session, request):
-    """Change a session's model or skills from {"model": NAME, "skills": [REF, ...]}."""
+    """Change a session's title, model or skills from {"title": ..., "model": NAME,
+    "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's."""
+    if "title" in request:
+        title = " ".join(str(request["title"] or "").split())
+        if not title:
+            raise BadRequest("a title can't be empty")
+        session.title, session.title_source = title, "user"
     if request.get("model"):
         session.model = resolve_model(client, str(request["model"]))
     if "skills" in request:
@@ -187,6 +194,35 @@ def chat(store, client, request):
                "context": client.context_length(session.model)}
 
 
+def export(store, client, session, request):
+    """A session as markdown or JSON, the way `/export` makes it: a session still titled with
+    its first message is first named by the model. {"save": true} writes the file into the
+    export folder; otherwise the text comes back for the page to offer as a download."""
+    fmt = request.get("format") or "md"
+    if fmt not in ("md", "json"):
+        raise BadRequest("format is md or json")
+    if not session.message_count:
+        raise BadRequest("nothing to export: this session has no messages yet")
+    notes = []
+    titles.ensure(store, client, session, notes.append, notes.append)
+    notes = [n for n in notes if not n.endswith("…")]  # progress the page already showed
+    session = store.get(session.id)
+    messages = store.messages(session.id)
+    text = (render.to_json(session, messages) if fmt == "json"
+            else render.to_markdown(session, messages, thinking=bool(request.get("thinking"))))
+    path = render.export_path(session, fmt)
+    result = {"session": session_json(session), "notes": notes, "filename": path.name}
+    if request.get("save"):
+        try:
+            render.write_export(path, text)
+        except OSError as e:
+            raise BadRequest(f"can't write {files.display_path(path)}: {e.strerror or e}") from None
+        result["path"] = files.display_path(path)
+    else:
+        result["text"] = text
+    return result
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = None      # set by make_server
     client = None
@@ -235,11 +271,38 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/chat":
                 return self._chat(store, request)
+            if path.startswith("/api/sessions/") and path.endswith("/export"):
+                return self._export(store, unquote(path[len("/api/sessions/"):-len("/export")]),
+                                    request)
             if path.startswith("/api/sessions/"):
                 return self._update(store, unquote(path[len("/api/sessions/"):]), request)
             return self._error(404, "not found")
         finally:
             store.close()
+
+    def do_DELETE(self):
+        if not self._host_ok() or not self._same_origin():
+            return self._error(403, "forbidden")
+        path = urlsplit(self.path).path
+        if not path.startswith("/api/sessions/"):
+            return self._error(404, "not found")
+        store = Store(self.db_path)
+        try:
+            session = store.get(unquote(path[len("/api/sessions/"):]))
+            store.delete(session.id)
+            return self._json({"deleted": session.id})
+        except (NotFound, Ambiguous) as e:
+            return self._error(404, str(e))
+        finally:
+            store.close()
+
+    def _export(self, store, ref, request):
+        try:
+            return self._json(export(store, self.client, store.get(ref), request))
+        except (NotFound, Ambiguous) as e:
+            return self._error(404, str(e))
+        except BadRequest as e:
+            return self._error(400, str(e))
 
     def _update(self, store, ref, request):
         try:

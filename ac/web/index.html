@@ -53,16 +53,26 @@ button { font: inherit; cursor: pointer; }
 #back { display: none; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; position: relative; }
 select.btn { padding-right: 8px; max-width: 100%; }
-#skills-panel { position: absolute; top: 100%; left: 0; z-index: 5; margin-top: 4px; min-width: 260px;
+.panel { position: absolute; top: 100%; left: 0; z-index: 5; margin-top: 4px; min-width: 260px;
                 max-width: min(420px, calc(100vw - 32px)); max-height: 50vh; overflow-y: auto;
                 background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
                 box-shadow: 0 8px 24px rgba(0, 0, 0, .12); padding: 6px; }
-#skills-panel label { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px;
+.panel label { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px;
                       border-radius: 6px; cursor: pointer; font-size: 14px; }
-#skills-panel label:hover { background: var(--panel); }
-#skills-panel input { margin-top: 4px; accent-color: var(--accent); }
-#skills-panel small { display: block; color: var(--muted); font-size: 12px; }
-#skills-panel .empty { padding: 6px 8px; color: var(--muted); font-size: 13px; }
+.panel label:hover { background: var(--panel); }
+.panel input { margin-top: 4px; accent-color: var(--accent); }
+.panel small { display: block; color: var(--muted); font-size: 12px; }
+.panel .empty { padding: 6px 8px; color: var(--muted); font-size: 13px; }
+#export-panel { left: auto; right: 0; }
+.panel .actions { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 4px; }
+.panel .actions .btn { text-align: left; }
+.panel .status { padding: 4px 8px; font-size: 13px; color: var(--muted); }
+.controls .spacer { flex: 1; }
+.controls .confirm { font-size: 13px; color: var(--warn); align-self: center; }
+.btn.danger { color: var(--warn); }
+.btn.danger.primary { background: var(--warn); border-color: var(--warn); color: #fff; }
+#title-edit { width: 100%; font: 600 17px var(--sans); padding: 2px 6px; border: 1px solid var(--accent);
+              border-radius: 6px; background: var(--bg); color: var(--text); }
 #chat { flex: 1; overflow-y: auto; padding: 20px 24px 40px; }
 #chat .inner { max-width: 780px; margin: 0 auto; }
 .placeholder { color: var(--muted); text-align: center; margin-top: 20vh; }
@@ -141,7 +151,22 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
     <div class="controls">
       <select id="model" class="btn" aria-label="Model"></select>
       <button id="skills-btn" class="btn" type="button" aria-expanded="false">Skills: none</button>
-      <div id="skills-panel" hidden></div>
+      <div id="skills-panel" class="panel" hidden></div>
+      <span class="spacer"></span>
+      <span id="session-actions">
+        <button id="rename-btn" class="btn" type="button">Rename</button>
+        <button id="export-btn" class="btn" type="button" aria-expanded="false">Export</button>
+        <button id="delete-btn" class="btn danger" type="button">Delete</button>
+      </span>
+      <div id="export-panel" class="panel" hidden>
+        <label><input id="export-thinking" type="checkbox"><span>Include reasoning<small>In markdown; JSON always has it</small></span></label>
+        <div class="actions">
+          <button class="btn" type="button" data-save="1">Save to export folder</button>
+          <button class="btn" type="button" data-format="md">Download markdown</button>
+          <button class="btn" type="button" data-format="json">Download JSON</button>
+        </div>
+        <div id="export-status" class="status" hidden></div>
+      </div>
     </div>
   </header>
   <div id="chat"><div class="inner"></div></div>
@@ -307,6 +332,7 @@ function showControls() {
     options.push(el("option", { value: m.name }, m.parameter_size ? `${m.name} · ${m.parameter_size}` : m.name));
   $("#model").replaceChildren(...options);
   $("#model").value = chosen || "";
+  $("#session-actions").hidden = !session;
   const refs = session ? session.skills : draft.skills;
   $("#skills-btn").textContent = "Skills: " + (refs.length ? refs.map(skillName).join(", ") : "none");
   if (!$("#skills-panel").hidden) fillSkills();
@@ -355,6 +381,110 @@ async function loadChoices() {
   try { models = (await api("/models")).models; } catch (e) { models = []; }
   try { allSkills = (await api("/skills")).skills; } catch (e) { allSkills = []; }
   showControls();
+}
+
+// -- rename, export, delete --------------------------------------------------------------------
+
+function closePanels(except) {
+  for (const [panel, button] of [["#skills-panel", "#skills-btn"], ["#export-panel", "#export-btn"]]) {
+    if (panel === except) continue;
+    $(panel).hidden = true;
+    $(button).setAttribute("aria-expanded", "false");
+  }
+}
+
+function togglePanel(panel, button) {
+  closePanels(panel);
+  $(panel).hidden = !$(panel).hidden;
+  $(button).setAttribute("aria-expanded", String(!$(panel).hidden));
+  return !$(panel).hidden;
+}
+
+function rename() {
+  if (!session) return;
+  const input = el("input", { id: "title-edit", "aria-label": "Title" });
+  input.value = session.title || "";
+  const title = $("#title");
+  title.replaceChildren(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const text = input.value.trim();
+    title.textContent = session.title || "(untitled)";
+    if (save && text && text !== session.title) change({ title: text });
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+async function exportSession(request) {
+  if (!session) return;
+  const id = session.id, status = $("#export-status");
+  const buttons = $("#export-panel").querySelectorAll("button");
+  buttons.forEach((b) => { b.disabled = true; });
+  status.hidden = false;
+  status.textContent = session.title && session.title_source !== "auto" ? "Exporting…" : "Naming this session, then exporting…";
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/export`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...request, thinking: $("#export-thinking").checked }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (session && session.id === id) showHeader(data.session);
+    loadSessions();
+    for (const line of data.notes) note(line);
+    if (data.path) {
+      note(`Saved ${data.path}`);
+    } else {
+      const type = request.format === "json" ? "application/json" : "text/markdown";
+      const url = URL.createObjectURL(new Blob([data.text], { type: type + ";charset=utf-8" }));
+      const link = el("a", { href: url, download: data.filename });
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    closePanels();
+  } catch (e) {
+    note(e.message, "error");
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+    status.hidden = true;
+  }
+  scrollDown(true);
+}
+
+// Delete asks in place: the button becomes a question with its own answer buttons.
+function askDelete() {
+  if (!session) return;
+  const actions = $("#session-actions"), before = [...actions.childNodes];
+  const yes = el("button", { class: "btn danger primary", type: "button" }, "Delete");
+  const no = el("button", { class: "btn", type: "button" }, "Keep");
+  const count = session.message_count;
+  actions.replaceChildren(el("span", { class: "confirm" }, `Delete this session${count ? ` and its ${count} messages` : ""}? `), " ", yes, " ", no);
+  const restore = () => actions.replaceChildren(...before);
+  no.addEventListener("click", restore);
+  no.focus();
+  yes.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/sessions/" + encodeURIComponent(session.id), { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      restore();
+      location.hash = "new";
+      loadSessions();
+    } catch (e) {
+      restore();
+      note(e.message, "error");
+    }
+  });
 }
 
 // -- files to attach ------------------------------------------------------------------------
@@ -601,15 +731,18 @@ $("#input").addEventListener("keydown", (e) => {
 });
 $("#new").addEventListener("click", () => { location.hash = "new"; });
 $("#model").addEventListener("change", () => change({ model: $("#model").value }));
-$("#skills-btn").addEventListener("click", () => {
-  const panel = $("#skills-panel");
-  panel.hidden = !panel.hidden;
-  $("#skills-btn").setAttribute("aria-expanded", String(!panel.hidden));
-  if (!panel.hidden) fillSkills();
+$("#skills-btn").addEventListener("click", () => { if (togglePanel("#skills-panel", "#skills-btn")) fillSkills(); });
+$("#export-btn").addEventListener("click", () => togglePanel("#export-panel", "#export-btn"));
+$("#export-panel").addEventListener("click", (e) => {
+  const button = e.target.closest("button");
+  if (!button) return;
+  exportSession(button.dataset.save ? { save: true, format: "md" } : { format: button.dataset.format });
 });
-document.addEventListener("click", (e) => {
-  if (!e.target.closest(".controls")) { $("#skills-panel").hidden = true; $("#skills-btn").setAttribute("aria-expanded", "false"); }
-});
+$("#rename-btn").addEventListener("click", rename);
+$("#title").addEventListener("dblclick", rename);
+$("#delete-btn").addEventListener("click", askDelete);
+document.addEventListener("click", (e) => { if (!e.target.closest(".controls")) closePanels(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePanels(); });
 $("#attach").addEventListener("click", () => $("#file").click());
 $("#file").addEventListener("change", () => { addFiles([...$("#file").files]); $("#file").value = ""; });
 $("#input").addEventListener("paste", (e) => {

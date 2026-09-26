@@ -56,6 +56,15 @@ class ServerTest(unittest.TestCase):
             body = json.loads(body)
         return res.status, body
 
+    def delete(self, path, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        self.addCleanup(conn.close)
+        conn.request("DELETE", path, headers={
+            "Host": f"127.0.0.1:{self.port}", "Origin": f"http://127.0.0.1:{self.port}",
+            **(headers or {})})
+        res = conn.getresponse()
+        return res.status, json.loads(res.read())
+
     def post(self, path, body, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
         self.addCleanup(conn.close)
@@ -286,6 +295,68 @@ class ServerTest(unittest.TestCase):
         _, events = self.post("/api/chat", {"text": "Autumn?", "model": "m1", "skills": ["haiku"]})
         self.assertEqual(events[0]["session"]["skills"], ["haiku"])
         self.assertIn("Answer in haiku.", self.fake.requests[-1]["messages"][0]["content"])
+
+
+    # -- rename, delete, export ------------------------------------------------
+
+    def test_rename(self):
+        status, body = self.post(f"/api/sessions/{self.soup.id}", {"title": "  Leek   soup  "})
+        self.assertEqual((status, body["session"]["title"]), (200, "Leek soup"))
+        again = self.store.get(self.soup.id)
+        self.assertEqual((again.title, again.title_source), ("Leek soup", "user"))
+        self.assertEqual(self.post(f"/api/sessions/{self.soup.id}", {"title": " "}),
+                         (400, {"error": "a title can't be empty"}))
+
+    def test_delete(self):
+        self.assertEqual(self.delete(f"/api/sessions/{self.soup.id}"), (200, {"deleted": self.soup.id}))
+        self.assertEqual([s.id for s in self.store.list()], [self.lisbon.id])
+        self.assertEqual(self.delete(f"/api/sessions/{self.soup.id}")[0], 404)
+        # Another site can't delete through the browser either.
+        status, _ = self.delete(f"/api/sessions/{self.lisbon.id}", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        self.assertEqual(len(self.store.list()), 1)
+
+    def test_export_names_the_session_then_offers_the_text(self):
+        self.fake.reply("Three Days in Lisbon")
+        self.store.db.execute("UPDATE sessions SET title_source = 'auto' WHERE id = ?", (self.lisbon.id,))
+        self.store.db.commit()
+        status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "md"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["session"]["title"], "Three Days in Lisbon")
+        self.assertIn("titled: Three Days in Lisbon", body["notes"])
+        self.assertRegex(body["filename"], r"^\d{4}-\d{2}-\d{2} Three Days in Lisbon\.md$")
+        self.assertIn("# Three Days in Lisbon", body["text"])
+        self.assertIn("**Day 1**: Alfama", body["text"])
+        self.assertNotIn("hmm", body["text"])
+        _, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "md", "thinking": True})
+        self.assertIn("hmm", body["text"])
+        _, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "json"})
+        self.assertEqual(json.loads(body["text"])["id"], self.lisbon.id)
+        self.assertEqual(len(self.fake.requests), 1)    # a title the model gave is kept
+
+    def test_export_saves_into_the_export_folder(self):
+        folder = Path(self.db).parent / "exports"
+        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(folder)}):
+            status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"save": True})
+        self.assertEqual(status, 200)
+        written = folder / body["filename"]
+        self.assertEqual(body["path"], str(written))
+        self.assertIn("# Trip to Lisbon", written.read_text())
+        self.assertNotIn("text", body)
+        self.assertEqual(self.fake.requests, [])        # a title the user gave is kept
+
+    def test_export_problems(self):
+        empty = self.store.save(self.store.draft("m1", title="Empty"))
+        self.assertEqual(self.post(f"/api/sessions/{empty.id}/export", {}),
+                         (400, {"error": "nothing to export: this session has no messages yet"}))
+        self.assertEqual(self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "pdf"}),
+                         (400, {"error": "format is md or json"}))
+        blocker = Path(self.db).parent / "a-file"
+        blocker.write_text("")
+        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(blocker / "sub")}):
+            status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"save": True})
+        self.assertEqual(status, 400)
+        self.assertIn("can't write", body["error"])
 
 
 if __name__ == "__main__":
