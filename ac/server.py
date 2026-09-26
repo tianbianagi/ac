@@ -371,11 +371,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._delete_attachment(path[len("/api/attachments/"):])
         if not path.startswith("/api/sessions/"):
             return self._error(404, "not found")
+        ref, _, rest = path[len("/api/sessions/"):].partition("/messages/")
+        if rest:
+            return self._delete_message(unquote(ref), rest)
         store = Store(self.db_path)
         try:
             session = store.get(unquote(path[len("/api/sessions/"):]))
             store.delete(session.id)
             return self._json({"deleted": session.id})
+        except (NotFound, Ambiguous) as e:
+            return self._error(404, str(e))
+        finally:
+            store.close()
+
+    def _delete_message(self, ref, seq):
+        """Take one message out of a conversation, with the files that came with it."""
+        store = Store(self.db_path)
+        try:
+            session = store.get(ref)
+            store.delete_message(session.id, int(seq))
+            return self._json({"deleted": int(seq), "session": session_json(store.get(session.id))})
+        except ValueError:
+            return self._error(404, "no such message")
         except (NotFound, Ambiguous) as e:
             return self._error(404, str(e))
         finally:

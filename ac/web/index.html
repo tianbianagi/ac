@@ -114,6 +114,16 @@ select.btn { padding-right: 8px; max-width: 100%; }
 .note .btn { margin-left: 8px; }
 .msg.pending .body:empty::after { content: "…"; color: var(--muted); }
 .msg.sending { opacity: .6; }
+.msg .actions { display: flex; align-items: center; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity .12s; }
+.msg:hover .actions, .msg:focus-within .actions, .msg .actions.asking { opacity: 1; }
+@media (hover: none) { .msg .actions { opacity: 1; } }
+.msg.user .actions { justify-content: flex-end; }
+.act { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+       border: 0; border-radius: 6px; background: none; color: var(--muted); }
+.act:hover { background: var(--panel); color: var(--accent); }
+.act svg { width: 15px; height: 15px; }
+.msg .actions .confirm { font-size: 13px; color: var(--warn); margin-right: 6px; }
+.msg .actions .btn { padding: 2px 10px; font-size: 12px; margin-left: 4px; }
 
 #composer { border-top: 1px solid var(--line); padding: 12px 24px 16px; }
 #composer form { max-width: 780px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; }
@@ -903,8 +913,75 @@ function renderMessage(m) {
   const thumbs = pictures.length
     ? el("div", { class: "thumbs" }, ...pictures.map((a) => el("img", { src: `/api/attachments/${a.id}`, alt: a.path, loading: "lazy" })))
     : null;
-  return el("article", { class: `msg ${m.role}` },
-            el("div", { class: "who" }, who, status), thinking, body, files, thumbs);
+  const article = el("article", { class: `msg ${m.role}` },
+                    el("div", { class: "who" }, who, status), thinking, body, files, thumbs);
+  if (m.seq != null) article.append(messageActions(m, article));
+  return article;
+}
+
+// -- copy and delete, per message ---------------------------------------------------------------
+
+const ICON_SVG = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
+const ICONS = {
+  copy: '<svg %SVG%><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>',
+  copied: '<svg %SVG%><path d="M20 6 9 17l-5-5"/></svg>',
+  trash: '<svg %SVG%><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+};
+for (const k in ICONS) ICONS[k] = ICONS[k].replace("%SVG%", ICON_SVG);
+
+async function copyText(text) {
+  try {
+    // A browser that never answers (no permission prompt shown, say) mustn't leave it hanging.
+    await Promise.race([navigator.clipboard.writeText(text),
+                        new Promise((_, fail) => setTimeout(() => fail(new Error("no answer")), 500))]);
+  } catch {                                // no clipboard access: the old way still works
+    const area = el("textarea", { style: "position:fixed;opacity:0" });
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
+
+// Copy (the text as written: markdown, for a reply) and delete (after asking), under a message.
+function messageActions(m, article) {
+  const bar = el("div", { class: "actions" });
+  const copy = el("button", { type: "button", class: "act", title: "Copy", "aria-label": "Copy message", html: ICONS.copy });
+  const drop = el("button", { type: "button", class: "act", title: "Delete", "aria-label": "Delete message", html: ICONS.trash });
+  bar.append(copy, drop);
+  copy.addEventListener("click", async () => {
+    await copyText(m.content);
+    copy.innerHTML = ICONS.copied;
+    copy.title = "Copied";
+    setTimeout(() => { copy.innerHTML = ICONS.copy; copy.title = "Copy"; }, 1200);
+  });
+  drop.addEventListener("click", () => {
+    if (streaming) { note("Wait for the reply to finish, then delete."); return; }
+    const before = [...bar.childNodes];
+    const yes = el("button", { class: "btn danger primary", type: "button" }, "Delete");
+    const no = el("button", { class: "btn", type: "button" }, "Keep");
+    bar.classList.add("asking");
+    bar.replaceChildren(el("span", { class: "confirm" }, "Delete this message?"), yes, no);
+    const restore = () => { bar.classList.remove("asking"); bar.replaceChildren(...before); };
+    no.addEventListener("click", restore);
+    no.focus();
+    yes.addEventListener("click", async () => {
+      try {
+        const id = current;
+        const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages/${m.seq}`, { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        article.remove();
+        loadSessions();
+        await openSession(id);             // the rest as saved, with Retry offered if it now needs one
+      } catch (e) {
+        restore();
+        note(e.message, "error");
+      }
+    });
+  });
+  return bar;
 }
 
 function note(text, kind = "") {

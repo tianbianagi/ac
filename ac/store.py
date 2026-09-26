@@ -402,6 +402,17 @@ class Store:
         with self.db:
             self.db.execute("DELETE FROM attachments WHERE id = ?", (attachment_id,))
 
+    def delete_message(self, session_id, seq):
+        """Drop one message, and the files that came with it; the rest of the session stays."""
+        with self.db:
+            gone = self.db.execute(
+                "DELETE FROM messages WHERE session_id = ? AND seq = ?", (session_id, seq)).rowcount
+            if gone:
+                self.db.execute(
+                    "UPDATE sessions SET updated_at = ? WHERE id = ?", (_now(), session_id))
+        if not gone:
+            raise NotFound(f"no message {seq} in {session_id}")
+
     def delete_messages_from(self, session_id, seq):
         """Drop message seq and everything after it."""
         with self.db:

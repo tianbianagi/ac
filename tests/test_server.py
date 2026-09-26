@@ -464,5 +464,28 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 403)
 
 
+    def test_delete_one_message(self):
+        # Lisbon: 1 user (with a file), 2 assistant. Add another exchange, then drop the first reply.
+        self.store.add_message(self.lisbon.id, "user", "And day 2?")
+        self.store.add_message(self.lisbon.id, "assistant", "Belém")
+        status, body = self.delete(f"/api/sessions/{self.lisbon.id}/messages/2")
+        self.assertEqual((status, body["deleted"], body["session"]["message_count"]), (200, 2, 3))
+        self.assertEqual([(m.seq, m.content) for m in self.store.messages(self.lisbon.id)],
+                         [(1, "Plan three days"), (3, "And day 2?"), (4, "Belém")])
+        # Its files go with it.
+        status, _ = self.delete(f"/api/sessions/{self.lisbon.id}/messages/1")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM attachments").fetchone()[0], 0)
+        self.assertEqual(self.delete(f"/api/sessions/{self.lisbon.id}/messages/1")[0], 404)
+        self.assertEqual(self.delete(f"/api/sessions/{self.lisbon.id}/messages/x")[0], 404)
+        self.assertEqual(self.delete("/api/sessions/zzzz/messages/1")[0], 404)
+        status, _ = self.delete(f"/api/sessions/{self.lisbon.id}/messages/3", {"Origin": "https://evil.example"})
+        self.assertEqual(status, 403)
+        # The next message still gets the next number.
+        self.fake.reply("Sintra")
+        self.post("/api/chat", {"session": self.lisbon.id, "text": "Day 3?"})
+        self.assertEqual([m.seq for m in self.store.messages(self.lisbon.id)], [3, 4, 5, 6])
+
+
 if __name__ == "__main__":
     unittest.main()
