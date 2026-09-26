@@ -1,5 +1,4 @@
 import io
-import json
 import os
 import tempfile
 import unittest
@@ -167,8 +166,11 @@ class CliTest(unittest.TestCase):
         branch = store.get("branch")
         self.assertEqual((branch.parent_id, branch.message_count), (rye.id, 1))
 
-        _, out, _ = self.ac("export", rye.id, "--format", "json")
-        self.assertEqual(json.loads(out)["title"], "Rye bread")
+        _, out, _ = self.ac("export", rye.id)
+        self.assertTrue(out.startswith("# Rye bread\n"))
+        code, _, err = self.ac("export", rye.id, "--format", "json")  # there is no JSON any more
+        self.assertEqual(code, 2)
+        self.assertIn("unrecognized arguments: --format json", err)
         target = self.tmp / "rye.md"
         self.ac("export", rye.id, "-o", str(target))
         self.assertIn("# Rye bread", target.read_text())

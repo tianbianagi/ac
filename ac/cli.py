@@ -154,11 +154,9 @@ def cmd_export(args):
 
     titles.ensure(store, Client(), session, say, say)
     messages = store.messages(session.id)
-    text = (render.to_json(session, messages) if args.format == "json"
-            else render.to_markdown(session, messages, thinking=args.thinking))
+    text = render.to_markdown(session, messages, thinking=args.thinking)
     if args.output or args.save:
-        path = Path(args.output).expanduser() if args.output else render.export_path(
-            session, args.format)
+        path = Path(args.output).expanduser() if args.output else render.export_path(session)
         try:
             render.write_export(path, text)
         except OSError as e:
@@ -309,10 +307,9 @@ def build_parser():
     p.add_argument("ids", nargs="+", metavar="id")
     p.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
 
-    p = add("export", cmd_export, "export a session as markdown or JSON")
+    p = add("export", cmd_export, "export a session as markdown")
     p.add_argument("id")
-    p.add_argument("--format", choices=["md", "json"], default="md")
-    p.add_argument("--thinking", action="store_true", help="include reasoning (markdown)")
+    p.add_argument("--thinking", action="store_true", help="include the model's reasoning")
     p.add_argument("-o", "--output", metavar="FILE")
     p.add_argument("--save", action="store_true",
                    help='write "DATE TITLE.md" into the export folder instead of printing')

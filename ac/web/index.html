@@ -200,11 +200,10 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
         <button id="delete-btn" class="btn danger" type="button">Delete</button>
       </span>
       <div id="export-panel" class="panel" hidden>
-        <label><input id="export-thinking" type="checkbox"><span>Include reasoning<small>In markdown; JSON always has it</small></span></label>
+        <label><input id="export-thinking" type="checkbox"><span>Include reasoning<small>The model's thinking, folded under each reply</small></span></label>
         <div class="actions">
           <button class="btn" type="button" data-save="1">Save to export folder</button>
-          <button class="btn" type="button" data-format="md">Download markdown</button>
-          <button class="btn" type="button" data-format="json">Download JSON</button>
+          <button class="btn" type="button">Download markdown</button>
         </div>
         <div id="export-status" class="status" hidden></div>
       </div>
@@ -502,8 +501,7 @@ async function exportSession(request) {
     if (data.path) {
       note(`Saved ${data.path}`);
     } else {
-      const type = request.format === "json" ? "application/json" : "text/markdown";
-      const url = URL.createObjectURL(new Blob([data.text], { type: type + ";charset=utf-8" }));
+      const url = URL.createObjectURL(new Blob([data.text], { type: "text/markdown;charset=utf-8" }));
       const link = el("a", { href: url, download: data.filename });
       document.body.append(link);
       link.click();
@@ -1072,7 +1070,7 @@ $("#export-btn").addEventListener("click", () => togglePanel("#export-panel", "#
 $("#export-panel").addEventListener("click", (e) => {
   const button = e.target.closest("button");
   if (!button) return;
-  exportSession(button.dataset.save ? { save: true, format: "md" } : { format: button.dataset.format });
+  exportSession(button.dataset.save ? { save: true } : {});
 });
 $("#rename-btn").addEventListener("click", rename);
 $("#title").addEventListener("dblclick", rename);

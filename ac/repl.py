@@ -41,7 +41,7 @@ Sessions
   /title                  have the model write a title for this session
   /fork [SEQ]             branch this session (up to message SEQ) and switch to the copy
   /delete [ID]            delete this (or another) session
-  /export [md|json] [FILE]  write the transcript; by default "DATE TITLE.md" in your export
+  /export [FILE]          write the transcript as markdown; by default "DATE TITLE.md" in your export
                           folder (export_dir in config.toml), else the current folder.
                           The model names the session first, unless you already have.
 Skills and prompt
@@ -516,13 +516,14 @@ class Repl:
         if not self._require_saved("export"):
             return
         parts = shlex.split(arg)
-        fmt = parts.pop(0) if parts and parts[0] in ("md", "json") else "md"
+        if parts and parts[0] == "json":
+            return self.error("exports are markdown only now; JSON export was removed")
+        if parts and parts[0] == "md":      # from when there was a choice: still means markdown
+            parts.pop(0)
         titles.ensure(self.store, self.client, self.session, self.note, self.warn)
         session = self.store.get(self.session.id)
-        path = Path(parts[0]).expanduser() if parts else render.export_path(session, fmt)
-        messages = self.store.messages(session.id)
-        text = (render.to_json(session, messages) if fmt == "json"
-                else render.to_markdown(session, messages))
+        path = Path(parts[0]).expanduser() if parts else render.export_path(session)
+        text = render.to_markdown(session, self.store.messages(session.id))
         try:
             render.write_export(path, text)
         except OSError as e:

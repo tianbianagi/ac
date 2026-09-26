@@ -1,6 +1,5 @@
 """Terminal output: styling, streamed replies, session tables, transcripts."""
 
-import json
 import os
 import re
 from collections import namedtuple
@@ -315,13 +314,13 @@ def _is_export_of(path, session):
     """Whether an existing file is an earlier export of this same session."""
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            return session.id in f.read(1000)  # both formats state the id near the top
+            return session.id in f.read(1000)  # an export states the id near the top
     except OSError:
         return False
 
 
-def export_path(session, fmt):
-    """Default file for an export: "<date the session began> <title>.<fmt>" in the export folder.
+def export_path(session):
+    """Default file for an export: "<date the session began> <title>.md" in the export folder.
 
     The session's own date, not today's, so exporting again updates the same file. If another
     session already owns that name, this one's id is added rather than overwriting it.
@@ -329,9 +328,9 @@ def export_path(session, fmt):
     day = datetime.fromisoformat(session.created_at).astimezone().date().isoformat()
     folder = config.export_dir() or Path.cwd()
     name = safe_filename(session.title) or f"ac-{session.id}"
-    path = folder / f"{day} {name}.{fmt}"
+    path = folder / f"{day} {name}.md"
     if path.exists() and not _is_export_of(path, session):
-        path = folder / f"{day} {name} ({session.id}).{fmt}"
+        path = folder / f"{day} {name} ({session.id}).md"
     return path
 
 
@@ -361,18 +360,3 @@ def to_markdown(session, messages, thinking=False):
             lines += [f"*attached: {line}*  " for line in files.summarize(m.attachments)]
     return "\n".join(lines) + "\n"
 
-
-def to_json(session, messages):
-    keep = ("seq", "role", "content", "thinking", "status", "model", "skills", "prompt_tokens",
-            "eval_tokens", "duration_ms", "created_at")
-    return json.dumps({
-        "id": session.id, "title": session.title, "model": session.model,
-        "system": session.system, "options": session.options, "skills": session.skills,
-        "parent_id": session.parent_id, "forked_at_seq": session.forked_at_seq,
-        "created_at": session.created_at, "updated_at": session.updated_at,
-        "names": config.speaker_names(),  # roles below stay "user"/"assistant" for programs
-        "messages": [{**{k: getattr(m, k) for k in keep},
-                      "attachments": [{"path": a.path, "kind": a.kind, "bytes": a.size,
-                                       "note": a.note} for a in m.attachments]}
-                     for m in messages],
-    }, indent=2, ensure_ascii=False) + "\n"

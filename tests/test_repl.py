@@ -364,18 +364,14 @@ class ReplTest(unittest.TestCase):
         self.assertEqual((stored.content, stored.attachments[0].content),
                          (f"read {note} please", "beta"))  # editing re-reads the file
 
-        self.run_lines(f"/export md {self.tmp / 'o.md'}", f"/export json {self.tmp / 'o.json'}")
+        self.run_lines(f"/export {self.tmp / 'o.md'}")
         note.write_text("SECRET FILE BODY")
-        self.run_lines(f"and now read {note}", f"/export md {self.tmp / 'o.md'}",
-                       f"/export json {self.tmp / 'o.json'}")
-        markdown, exported = (self.tmp / "o.md").read_text(), (self.tmp / "o.json").read_text()
+        self.run_lines(f"and now read {note}", f"/export {self.tmp / 'o.md'}")
+        markdown = (self.tmp / "o.md").read_text()
         # Exports name the files that were attached, and never reproduce what was in them.
         self.assertIn(f"*attached: {note} (text, 16 B)*", markdown)
-        self.assertEqual(json.loads(exported)["messages"][2]["attachments"],
-                         [{"path": str(note), "kind": "text", "bytes": 16, "note": None}])
-        for text in (markdown, exported):
-            self.assertNotIn("SECRET FILE BODY", text)
-            self.assertNotIn("beta", text)
+        self.assertNotIn("SECRET FILE BODY", markdown)
+        self.assertNotIn("beta", markdown)
         stored = self.store.messages(self.repl.session.id)[2]
         self.assertEqual(stored.attachments[0].content, "SECRET FILE BODY")  # still in the session
 
@@ -400,7 +396,7 @@ class ReplTest(unittest.TestCase):
         self.out = io.StringIO()
         for n in range(8):
             (self.tmp / "src" / f"more{n}.txt").write_text("x")
-        self.run_lines(f"now {self.tmp}/src/**", f"/export md {self.tmp / 'o.md'}")
+        self.run_lines(f"now {self.tmp}/src/**", f"/export {self.tmp / 'o.md'}")
         exported = (self.tmp / "o.md").read_text()
         self.assertRegex(exported, r"\*attached: and \d+ more files \(\d+ B\)\*")
         self.assertLess(exported.count("*attached:"), 3 + 4 + 1)  # summarised, not 11 lines
@@ -1257,8 +1253,7 @@ class ReplTest(unittest.TestCase):
         self.fake.reply("Hello!")
         self.fake.reply('**"Saying Hello: A First Exchange."**\n\nI chose this because...')
         target = self.tmp / "out.md"
-        out = self.run_lines("hi", f"/export md {target}",
-                             f"/export json {self.tmp / 'out.json'}")
+        out = self.run_lines("hi", f"/export {target}", f"/export md {target}")
         self.assertIn(f"wrote {target}", out)  # the full path, so the file can be found
         self.assertIn("titled: Saying Hello: A First Exchange", out)
         self.assertEqual(len(self.fake.requests), 2)  # named once, not again for the 2nd export
@@ -1266,8 +1261,10 @@ class ReplTest(unittest.TestCase):
         self.assertTrue(text.startswith("# Saying Hello: A First Exchange\n"))
         self.assertIn("## User\n\nhi", text)
         self.assertIn("## Assistant\n\nHello!", text)
-        data = json.loads((self.tmp / "out.json").read_text())
-        self.assertEqual([m["content"] for m in data["messages"]], ["hi", "Hello!"])
+        # JSON is gone; asking for it says so rather than writing a file called "json".
+        out = self.run_lines("/export json")
+        self.assertIn("error: exports are markdown only now; JSON export was removed", out)
+        self.assertFalse(Path("json").exists())
         cwd = os.getcwd()
         os.chdir(self.tmp)
         self.addCleanup(os.chdir, cwd)
@@ -1298,10 +1295,10 @@ class ReplTest(unittest.TestCase):
                          "Notes Summary and Twenty Questions")
 
     def test_a_title_you_chose_is_kept(self):
-        self.run_lines("hi", "/rename My own title", "/export json")
+        self.run_lines("hi", "/rename My own title", "/export")
         self.assertEqual(len(self.fake.requests), 1)  # the model was not asked
         day = datetime.now().date().isoformat()
-        cwd_file = Path(f"{day} My own title.json")
+        cwd_file = Path(f"{day} My own title.md")
         self.addCleanup(cwd_file.unlink, missing_ok=True)
         self.assertTrue(cwd_file.is_file())
         self.fake.reply("A Better Title Perhaps")
@@ -1342,18 +1339,17 @@ class ReplTest(unittest.TestCase):
         (self.tmp / "config" / "ac" / "config.toml").write_text(f'export_dir = "{vault}"\n')
         self.fake.reply("Hello!")
         self.fake.reply("A Short Greeting")
-        out = self.run_lines("hi", "/export", "/export json")
+        out = self.run_lines("hi", "/export")
         name = f"{datetime.now().date().isoformat()} A Short Greeting"
         self.assertIn(f"wrote {vault / name}.md", out)
         self.assertIn("## Assistant\n\nHello!", (vault / f"{name}.md").read_text())
-        self.assertTrue((vault / f"{name}.json").is_file())
 
         self.run_lines("more", "/export")  # same session, same file: updated, not duplicated
         self.assertEqual(len(list(vault.glob("*.md"))), 1)
         self.assertIn("more", (vault / f"{name}.md").read_text())
 
         explicit = self.tmp / "elsewhere.md"
-        self.run_lines(f"/export md {explicit}")  # a named file is used as given
+        self.run_lines(f"/export {explicit}")  # a named file is used as given
         self.assertTrue(explicit.is_file())
 
         with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "from-env")}):
@@ -1372,15 +1368,12 @@ class ReplTest(unittest.TestCase):
         self.run_lines("hi")
         with mock.patch.object(self.repl.client, "chat", chat):
             self.run_lines("again")
-        self.run_lines(f"/export md {self.tmp / 'o.md'}", f"/export json {self.tmp / 'o.json'}")
+        self.run_lines(f"/export {self.tmp / 'o.md'}")
         text = (self.tmp / "o.md").read_text()
         self.assertIn("## Sam\n\nhi", text)
         self.assertIn("## Robin\n\nHello!", text)
         self.assertIn("## Robin (interrupted)\n\npartial", text)
         self.assertNotRegex(text, r"## (User|Assistant)")
-        data = json.loads((self.tmp / "o.json").read_text())
-        self.assertEqual(data["names"], {"user": "Sam", "assistant": "Robin"})
-        self.assertEqual([m["role"] for m in data["messages"]][:2], ["user", "assistant"])
         # Labels for the reader only: the model is never told who it is supposed to be.
         self.assertNotIn("Robin", json.dumps(self.fake.requests))
         self.assertNotIn("Sam", json.dumps(self.fake.requests))

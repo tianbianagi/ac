@@ -28,7 +28,7 @@ acc ls [--search QUERY]      # full-text search over titles and messages
 acc show ID                  acc rename ID TITLE
 acc fork ID [--at SEQ]       acc rm ID... [-y]
 acc set ID [-m MODEL] [--system TEXT] [--think on|off] [-o temperature=0.2] [--add-skill NAME]
-acc export ID [--format md|json] [-o FILE | --save]   # prints unless told where to write
+acc export ID [--thinking] [-o FILE | --save]   # markdown; prints unless told where to write
 
 acc ask "question"           # one-shot; prints only the answer
 git diff | acc ask "review this:" -        # `-` marks where piped stdin goes
@@ -44,7 +44,7 @@ text keeps its line breaks. Replies stream in rendered as markdown, with reasoni
 **Stop** keeps the partial reply, as Ctrl-C does, and **Retry** asks again after a reply failed
 or was stopped. Attach files with the upload button, by dropping them on the chat, or by pasting an image; they are read as the terminal reads them (text, PDFs, images for models that can see), and attached images show in the conversation. The folder button picks files on the machine running `acc serve`, however you reach it: browse folders from your home, filter, and tick as many files as you like; ticking a folder takes everything in it, as `folder/**` would (hidden, ignored and binary files stay out). The box under the list holds everything queued, one path per line, and follows your ticks; edit it and press Enter to queue a path, a pattern such as `~/notes/**/*.md` or one of your `@names`, or delete a line to unqueue it. Paths named in a message are attached as well. The × on a sent file takes it out of the conversation, so the model stops seeing it from the next message on; the file itself is never touched. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
 **Rename** (or double-click the title), **Export** and **Delete** act on the open session. Export
-saves `DATE TITLE.md` into your export folder or downloads markdown or JSON; like `/export`, it
+saves `DATE TITLE.md` into your export folder or downloads it; like `/export`, it
 first has the model name a session that still carries its first message as its title. It listens
 only on this machine, answers only to `127.0.0.1` or `localhost`, and accepts changes only from
 its own page, so a web page elsewhere can neither read your sessions nor send messages through it.
@@ -168,8 +168,7 @@ with `AC_SKILLS_PATH`. Attach from the `/skills` list, by name, or by path to an
   summary; the original is untouched. Set a window explicitly with `/set num_ctx 32768`.
 - **Switching models.** `/models` lets you pick from the installed models; `/models NAME` (a
   unique prefix is enough) or `/models NUMBER` switches mid-chat. The whole conversation carries over to the new model, the
-  choice is saved with the session, and every reply records which model wrote it (`acc export
-  --format json`). If the new model isn't in memory, you're told how much Ollama has to load first.
+  choice is saved with the session, and every reply records which model wrote it. If the new model isn't in memory, you're told how much Ollama has to load first.
 - **Markdown** in replies is rendered for the terminal as it streams: headings, bold, italics,
   inline code, links, lists with hanging indents, quotes, tables, and word-wrapping to the window.
   Code blocks are printed exactly as written, never wrapped, so they copy out cleanly. Text is
@@ -214,8 +213,7 @@ adding another. Without an `export_dir` they go to the current folder. A filenam
 `/export` or `-o` is used exactly as written.
 
 The names only label exported transcripts (`## Sam`, `## Robin`). They are never sent to the
-model, so they don't give it a persona; JSON exports keep `"role": "user"`/`"assistant"` and list
-the names once at the top.
+model, so they don't give it a persona.
 
 A session starts out titled with its first message. Before its first export the model is asked,
 once, for a proper title (a short separate request that ignores the session's skills), and that

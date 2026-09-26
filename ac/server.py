@@ -282,12 +282,9 @@ def chat(store, client, request):
 
 
 def export(store, client, session, request):
-    """A session as markdown or JSON, the way `/export` makes it: a session still titled with
-    its first message is first named by the model. {"save": true} writes the file into the
-    export folder; otherwise the text comes back for the page to offer as a download."""
-    fmt = request.get("format") or "md"
-    if fmt not in ("md", "json"):
-        raise BadRequest("format is md or json")
+    """A session as markdown, the way `/export` makes it: a session still titled with its first
+    message is first named by the model. {"save": true} writes the file into the export
+    folder; otherwise the text comes back for the page to offer as a download."""
     if not session.message_count:
         raise BadRequest("nothing to export: this session has no messages yet")
     notes = []
@@ -295,9 +292,8 @@ def export(store, client, session, request):
     notes = [n for n in notes if not n.endswith("…")]  # progress the page already showed
     session = store.get(session.id)
     messages = store.messages(session.id)
-    text = (render.to_json(session, messages) if fmt == "json"
-            else render.to_markdown(session, messages, thinking=bool(request.get("thinking"))))
-    path = render.export_path(session, fmt)
+    text = render.to_markdown(session, messages, thinking=bool(request.get("thinking")))
+    path = render.export_path(session)
     result = {"session": session_json(session), "notes": notes, "filename": path.name}
     if request.get("save"):
         try:

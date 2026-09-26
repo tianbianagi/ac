@@ -320,7 +320,7 @@ class ServerTest(unittest.TestCase):
         self.fake.reply("Three Days in Lisbon")
         self.store.db.execute("UPDATE sessions SET title_source = 'auto' WHERE id = ?", (self.lisbon.id,))
         self.store.db.commit()
-        status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "md"})
+        status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {})
         self.assertEqual(status, 200)
         self.assertEqual(body["session"]["title"], "Three Days in Lisbon")
         self.assertIn("titled: Three Days in Lisbon", body["notes"])
@@ -328,10 +328,8 @@ class ServerTest(unittest.TestCase):
         self.assertIn("# Three Days in Lisbon", body["text"])
         self.assertIn("**Day 1**: Alfama", body["text"])
         self.assertNotIn("hmm", body["text"])
-        _, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "md", "thinking": True})
+        _, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"thinking": True})
         self.assertIn("hmm", body["text"])
-        _, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "json"})
-        self.assertEqual(json.loads(body["text"])["id"], self.lisbon.id)
         self.assertEqual(len(self.fake.requests), 1)    # a title the model gave is kept
 
     def test_export_saves_into_the_export_folder(self):
@@ -349,8 +347,6 @@ class ServerTest(unittest.TestCase):
         empty = self.store.save(self.store.draft("m1", title="Empty"))
         self.assertEqual(self.post(f"/api/sessions/{empty.id}/export", {}),
                          (400, {"error": "nothing to export: this session has no messages yet"}))
-        self.assertEqual(self.post(f"/api/sessions/{self.lisbon.id}/export", {"format": "pdf"}),
-                         (400, {"error": "format is md or json"}))
         blocker = Path(self.db).parent / "a-file"
         blocker.write_text("")
         with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(blocker / "sub")}):
