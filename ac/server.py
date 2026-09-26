@@ -1,7 +1,8 @@
 """A local web server for chatting in the browser: `acc serve`.
 
-It listens on 127.0.0.1 only and answers only requests addressed to it by that name, since it
-can read every session and the files a message names. Each request opens its own connection
+It listens on 127.0.0.1 only and answers only requests addressed to it by that name (or by a
+name passed with --allow-host, for a proxy in front of it), since it can read every session and
+the files a message names. Each request opens its own connection
 to the database, so the server can answer several at once.
 """
 
@@ -324,6 +325,7 @@ def export(store, client, session, request):
 class Handler(BaseHTTPRequestHandler):
     db_path = None      # set by make_server
     client = None
+    allowed_hosts = ()
     quiet = True
 
     def log_message(self, format, *args):
@@ -535,9 +537,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _host_ok(self):
         """Only requests addressed to this machine by name: a page elsewhere can't reach the
-        server through a hostname that it has pointed at 127.0.0.1."""
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
-        return host in ("127.0.0.1", "localhost")
+        server through a hostname that it has pointed at 127.0.0.1. A proxy in front of it
+        passes its own name, which --allow-host adds."""
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].lower()
+        return host in ("127.0.0.1", "localhost", *self.allowed_hosts)
 
     def _same_origin(self):
         """A change must come from this server's own page, not from a form on another site."""
@@ -569,16 +572,16 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(port=DEFAULT_PORT, db_path=None, client=None, quiet=True):
+def make_server(port=DEFAULT_PORT, db_path=None, client=None, quiet=True, allowed_hosts=()):
     handler = type("BoundHandler", (Handler,),
                    {"db_path": str(db_path or config.db_path()), "client": client or Client(),
-                    "quiet": quiet})
+                    "quiet": quiet, "allowed_hosts": tuple(h.lower() for h in allowed_hosts)})
     Store(handler.db_path).close()      # create or upgrade the database before any request
     return ThreadingHTTPServer((HOST, port), handler)
 
 
-def serve(port=DEFAULT_PORT, open_browser=True, say=print):
-    server = make_server(port, quiet=False)
+def serve(port=DEFAULT_PORT, open_browser=True, say=print, allowed_hosts=()):
+    server = make_server(port, quiet=False, allowed_hosts=allowed_hosts)
     url = f"http://{HOST}:{server.server_address[1]}/"
     say(f"{config.COMMAND} is serving {url}  (Ctrl-C stops it)", flush=True)
     if open_browser:

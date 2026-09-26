@@ -48,6 +48,9 @@ saves `DATE TITLE.md` into your export folder or downloads it; like `/export`, i
 first has the model name a session that still carries its first message as its title. It listens
 only on this machine, answers only to `127.0.0.1` or `localhost`, and accepts changes only from
 its own page, so a web page elsewhere can neither read your sessions nor send messages through it.
+To reach it from another device through a proxy of your own, add the name the proxy passes on,
+`acc serve --allow-host acc.example.com`; the proxy must do the authenticating, since the server
+itself has no login.
 
 Inside a chat, `/help` lists the commands: session management (`/new /sessions /rename
 /title /fork /delete /export`), skills (`/skills`), prompt (`/system`, `/context`, `/files`),

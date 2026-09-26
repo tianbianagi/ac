@@ -244,7 +244,7 @@ def cmd_models(args):
 
 def cmd_serve(args):
     try:
-        server.serve(args.port, open_browser=not args.no_open)
+        server.serve(args.port, open_browser=not args.no_open, allowed_hosts=args.allow_host)
     except OSError as e:
         raise StoreError(f"can't serve on port {args.port}: {e.strerror or e}") from None
 
@@ -331,6 +331,9 @@ def build_parser():
     p.add_argument("-p", "--port", type=int, default=server.DEFAULT_PORT,
                    help=f"port on 127.0.0.1 (default {server.DEFAULT_PORT})")
     p.add_argument("--no-open", action="store_true", help="don't open a browser window")
+    p.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                   help="also answer requests addressed to NAME, as from a proxy in front "
+                   "(repeatable)")
     return parser
 
 

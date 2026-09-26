@@ -127,6 +127,29 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(self.get("/api/sessions", host=f"localhost:{self.port}")[0], 200)
 
+    def test_allowed_host_behind_a_proxy(self):
+        httpd = server.make_server(0, db_path=self.db, client=Client(self.fake.host),
+                                   allowed_hosts=["Acc.Example.me"])
+        self.addCleanup(httpd.server_close)
+        threading.Thread(target=httpd.serve_forever, args=(0.05,), daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+
+        def request(method, path, host, origin=None):
+            conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1])
+            self.addCleanup(conn.close)
+            headers = {"Host": host, **({"Origin": origin} if origin else {})}
+            conn.request(method, path, headers=headers)
+            res = conn.getresponse()
+            res.read()
+            return res.status
+
+        self.assertEqual(request("GET", "/api/sessions", "acc.example.me"), 200)
+        self.assertEqual(request("GET", "/api/sessions", "evil.example"), 403)
+        # Changes still have to come from the proxied page itself.
+        path = f"/api/sessions/{self.soup.id}"
+        self.assertEqual(request("DELETE", path, "acc.example.me", "https://evil.example"), 403)
+        self.assertEqual(request("DELETE", path, "acc.example.me", "https://acc.example.me"), 200)
+
 
     # -- chatting ----------------------------------------------------------
 
