@@ -123,7 +123,9 @@ Answer in as few words as the question allows. ...
 
 Put skills in `~/accspace/config/skills/<name>/SKILL.md` (see `examples/skills/`), or add directories
 with `AC_SKILLS_PATH`. Skills there are everyone's; one user's own go in
-`~/accspace/config/users/<user>/skills/<name>/SKILL.md`, and win over a shared skill of that name. Attach them from **Skills** in the browser, or with `acc set ID --add-skill`
+`~/accspace/config/users/<user>/skills/<name>/SKILL.md`, and win over a shared skill of that name.
+In the browser, **Skills → Manage skills…** makes, edits, renames and deletes both kinds, and moves
+a skill between just yours and everyone's. Attach them from **Skills** in the browser, or with `acc set ID --add-skill`
 and `acc ask -s`, by name or by path to any markdown file: `acc ask -s ./notes/style.md "..."`.
 
 - Skills are **instructions only**. Nothing is executed and the model gets no tools.

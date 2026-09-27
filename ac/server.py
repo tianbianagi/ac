@@ -320,6 +320,45 @@ def tag_file(store, request):
     return {"tag": tag, "paths": paths, "path": os.path.realpath(path)}
 
 
+def skills_json(user):
+    """What the page needs about skills: those a session can attach (a user's own winning over a
+    shared one of the same name), and each library's own, for managing them."""
+    def listed(found, scope):
+        return [{"name": k.name, "description": k.description, "scope": scope}
+                for _, k in sorted(found.items())]
+    scope_of = {config.personal_skills_dir(user): "personal", config.shared_skills_dir(): "shared"}
+    usable = []
+    for name, k in sorted(skills.discover(config.skills_dirs(user)).items()):
+        usable.append({"name": name, "description": k.description,
+                       "scope": scope_of.get(k.path.parent.parent, "other")})
+    return {"skills": usable,
+            "library": {scope: listed(skills.discover([skills.library(scope, user)]), scope)
+                        for scope in skills.SCOPES}}
+
+
+def skill_json(user, scope, name):
+    """One skill of a library, for editing: {"scope", "name", "description", "body"}."""
+    path = skills.library(scope, user) / name / skills.FILENAME
+    if not skills.NAME.fullmatch(name) or not path.is_file():
+        raise NotFound(f"no {scope} skill named '{name}'")
+    meta, body = skills.parse(path.read_text(encoding="utf-8"))
+    return {"scope": scope, "name": name, "description": meta.get("description", ""), "body": body}
+
+
+def save_skill(user, request):
+    """Create or change a skill from {"scope", "name", "description", "body", "was"?: {"scope",
+    "name"}}; see skills.save."""
+    was = request.get("was")
+    if was is not None and not (isinstance(was, dict) and was.get("scope") and was.get("name")):
+        raise BadRequest("was must say the skill's scope and name")
+    try:
+        skills.save(user, str(request.get("scope") or ""), request.get("name"),
+                    request.get("description"), request.get("body"), was)
+    except skills.SkillError as e:
+        raise BadRequest(str(e)) from None
+    return skill_json(user, str(request["scope"]), str(request["name"]).strip())
+
+
 def update_session(store, client, session, request):
     """Change a session's title, model or skills from {"title": ..., "model": NAME,
     "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's.
@@ -530,6 +569,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/chat":
                 return self._chat(store, request)
+            if path == "/api/skills":
+                try:
+                    return self._json({"skill": save_skill(store.user, request),
+                                       **skills_json(store.user)})
+                except BadRequest as e:
+                    return self._error(400, str(e))
             if path == "/api/tags":
                 try:
                     return self._json(tag_file(store, request))
@@ -552,6 +597,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path.startswith("/api/attachments/"):
             return self._delete_attachment(path[len("/api/attachments/"):])
+        if path.startswith("/api/skills/"):
+            return self._delete_skill(*map(unquote, path[len("/api/skills/"):].partition("/")[::2]))
         if not path.startswith("/api/sessions/"):
             return self._error(404, "not found")
         ref, _, rest = path[len("/api/sessions/"):].partition("/messages/")
@@ -566,6 +613,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(404, str(e))
         finally:
             store.close()
+
+    def _delete_skill(self, scope, name):
+        """Delete one of a library's skills. Sessions that attached it are told it's gone."""
+        user = self._user()
+        try:
+            skills.remove(user, scope, name)
+        except skills.SkillError as e:
+            return self._error(404, str(e))
+        return self._json({"deleted": name, **skills_json(user)})
 
     def _delete_message(self, ref, seq):
         """Take one message out of a conversation, with the files that came with it."""
@@ -688,9 +744,13 @@ class Handler(BaseHTTPRequestHandler):
                  "real": [os.path.realpath(p) for p in paths]}
                 for name, paths in self._names(store, query).items()]})
         if path == "/skills":
-            found = skills.discover(config.skills_dirs(store.user))
-            return self._json({"skills": [{"name": s.name, "description": s.description}
-                                          for _, s in sorted(found.items())]})
+            return self._json(skills_json(store.user))
+        if path.startswith("/skills/"):
+            scope, _, name = path[len("/skills/"):].partition("/")
+            try:
+                return self._json(skill_json(store.user, unquote(scope), unquote(name)))
+            except skills.SkillError as e:
+                return self._error(404, str(e))
         if path.startswith("/attachments/"):
             try:
                 a = store.attachment(int(path[len("/attachments/"):]))

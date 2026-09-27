@@ -7,6 +7,8 @@ into the system prompt of sessions that attach it.
 
 import hashlib
 import os
+import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -140,3 +142,62 @@ def compose_system(system, refs, dirs=None):
         active.append(skill)
         parts.append(f'<skill name="{skill.name}">\n{skill.body}\n</skill>')
     return ("\n\n".join(parts) or None), active, missing
+
+
+# -- the libraries a user can change from the browser -------------------------------------------
+
+SCOPES = ("personal", "shared")
+NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+
+
+def library(scope, user):
+    """The folder a scope's skills live in: the user's own, or the one everyone shares."""
+    if scope == "personal":
+        return config.personal_skills_dir(user)
+    if scope == "shared":
+        return config.shared_skills_dir()
+    raise SkillError(f"no skill library '{scope}' (personal or shared)")
+
+
+def text(description, body):
+    """A SKILL.md's text: the description as frontmatter, then the instructions."""
+    description = " ".join(str(description or "").split())
+    if len(description) >= 2 and description[0] == description[-1] and description[0] in "\"'":
+        description = f"'{description}'" if description[0] == '"' else f'"{description}"'
+    body = str(body or "").strip()
+    return f"---\ndescription: {description}\n---\n\n{body}\n"   # so a body can't pass for frontmatter
+
+
+def save(user, scope, name, description, body, was=None):
+    """Write a skill into a library, creating it or changing it. `was` ({"scope", "name"}) is
+    where it lived until now, so a skill can be renamed, or moved between the user's own
+    library and the shared one, with any other files in its folder going along."""
+    name = str(name or "").strip()
+    if not NAME.fullmatch(name):
+        raise SkillError("a skill's name is lowercase letters, digits, - and _")
+    if not str(body or "").strip():
+        raise SkillError("a skill needs instructions")
+    folder = library(scope, user) / name
+    old = library(was["scope"], user) / str(was["name"]) if was else None
+    if old is not None and not (old / FILENAME).is_file():
+        raise SkillError(f"no {was['scope']} skill named '{was['name']}'")
+    if (folder / FILENAME).exists() and folder != old:
+        raise SkillError(f"there is already a {scope} skill named '{name}'")
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    if old is not None and folder != old:
+        shutil.move(old, folder)
+    folder.mkdir(exist_ok=True)
+    (folder / FILENAME).write_text(text(description, body), encoding="utf-8")
+    return load(folder)
+
+
+def remove(user, scope, name):
+    """Delete a skill's SKILL.md, and its folder once nothing else is in it."""
+    folder = library(scope, user) / str(name)
+    if not NAME.fullmatch(str(name)) or not (folder / FILENAME).is_file():
+        raise SkillError(f"no {scope} skill named '{name}'")
+    (folder / FILENAME).unlink()
+    try:
+        folder.rmdir()
+    except OSError:
+        pass            # other files the skill kept stay where they are

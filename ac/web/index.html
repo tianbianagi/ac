@@ -173,13 +173,40 @@ select.btn { padding-right: 8px; max-width: 100%; }
 .chip button:hover { color: var(--warn); }
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .thumbs img { max-width: 220px; max-height: 180px; border-radius: 8px; border: 1px solid var(--line); }
-#picker { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .35);
+#picker, #skills-sheet { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .35);
           display: flex; align-items: center; justify-content: center; padding: 16px; }
-#picker[hidden] { display: none; }
-#picker .sheet { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+#picker[hidden], #skills-sheet[hidden] { display: none; }
+#picker .sheet, #skills-sheet .sheet { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
                  width: min(680px, 100%); height: min(640px, 100%); display: flex; flex-direction: column;
                  box-shadow: 0 16px 48px rgba(0, 0, 0, .25); min-height: 0; }
-#picker header { display: flex; gap: 10px; align-items: center; padding: 12px 14px 8px; }
+#picker header, #skills-sheet header { display: flex; gap: 10px; align-items: center; padding: 12px 14px 8px; }
+#skills-sheet h3 { flex: 1; min-width: 0; margin: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis;
+                   white-space: nowrap; }
+#skills-sheet [hidden] { display: none; }
+#skills-list { list-style: none; margin: 0; padding: 0 8px 12px; overflow-y: auto; flex: 1;
+               border-top: 1px solid var(--line); }
+#skills-list li > button { display: block; width: 100%; text-align: left; border: 0; background: none; color: inherit;
+                           padding: 7px 8px; border-radius: 6px; font: inherit; font-size: 14px; }
+#skills-list li > button:hover { background: var(--panel); }
+#skills-list small { display: block; color: var(--muted); font-size: 12px; }
+#skills-list .section { font-size: 12px; color: var(--muted); padding: 12px 8px 2px; }
+#skills-list .empty { padding: 4px 8px; color: var(--muted); font-size: 13px; }
+#skill-form { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 14px; flex: 1; min-height: 0;
+              overflow-y: auto; border-top: 1px solid var(--line); }
+#skill-form .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+#skill-form .field.grow { flex: 1; min-height: 10em; }
+#skill-form input[type=text], #skill-form textarea { font: inherit; font-size: 14px; padding: 7px 10px; color: var(--text);
+                                                     border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+#skill-form input[type=text]:focus, #skill-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#skill-form textarea { flex: 1; resize: none; font: 13px/1.5 var(--mono); }
+#skill-form .scope { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
+#skill-form .scope label { display: inline-flex; gap: 6px; align-items: center; }
+#skill-form .scope input { accent-color: var(--accent); }
+#skill-form .hint { font-size: 12px; color: var(--amber); }
+#skill-form .row { display: flex; gap: 8px; align-items: center; }
+#skill-form .spacer { flex: 1; }
+#skill-status { font-size: 13px; color: var(--muted); min-height: 1.5em; }
+#skill-status.error { color: var(--warn); }
 #crumbs { flex: 1; min-width: 0; font: 13px var(--mono); overflow-x: auto; white-space: nowrap; }
 #crumbs button { border: 0; background: none; color: var(--accent); padding: 2px 1px; font: inherit; }
 #crumbs button:hover { text-decoration: underline; }
@@ -338,6 +365,39 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       <button class="btn" type="submit">Apply</button>
     </form>
     <div id="picker-status"></div>
+  </div>
+</div>
+<div id="skills-sheet" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="skills-heading">
+    <header>
+      <h3 id="skills-heading">Skills</h3>
+      <button id="skill-new" class="btn" type="button">New skill</button>
+      <button id="skills-done" class="btn primary" type="button">Done</button>
+    </header>
+    <ul id="skills-list"></ul>
+    <form id="skill-form" hidden>
+      <label class="field">Name
+        <input id="skill-name" type="text" placeholder="e.g. concise" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </label>
+      <div id="skill-rename-hint" class="hint" hidden>Chats that use it by its old name will need it turned on again.</div>
+      <div class="scope" role="radiogroup" aria-label="Who can use it">
+        <label><input type="radio" name="skill-scope" value="personal"> Just me</label>
+        <label><input type="radio" name="skill-scope" value="shared"> Everyone</label>
+      </div>
+      <label class="field">Description
+        <input id="skill-description" type="text" placeholder="One line on what it's for" autocomplete="off">
+      </label>
+      <label class="field grow">Instructions
+        <textarea id="skill-body" placeholder="What the model should do while this skill is on"></textarea>
+      </label>
+      <div class="row">
+        <button class="btn primary" type="submit">Save</button>
+        <button id="skill-cancel" class="btn" type="button">Cancel</button>
+        <span class="spacer"></span>
+        <button id="skill-delete" class="btn danger" type="button">Delete</button>
+      </div>
+      <div id="skill-status" aria-live="polite"></div>
+    </form>
   </div>
 </div>
 <script>
@@ -562,15 +622,133 @@ function fillSkills() {
       const next = box.checked ? [...refs, ref] : refs.filter((r) => skillName(r) !== s.name);
       change({ skills: next });
     });
-    return el("label", {}, box, el("span", {}, s.name, s.description ? el("small", {}, s.description) : null));
+    const about = [s.description, s.scope === "personal" ? "just yours" : ""].filter(Boolean).join(" · ");
+    return el("label", {}, box, el("span", {}, s.name, about ? el("small", {}, about) : null));
   }));
-  if (!rows.length) panel.append(el("div", { class: "empty" }, "No skills yet. Add them to ~/accspace/config/skills."));
+  if (!rows.length) panel.append(el("div", { class: "empty" }, "No skills yet."));
+  const manage = el("button", { class: "btn", type: "button" }, "Manage skills…");
+  manage.addEventListener("click", openSkills);
+  panel.append(el("div", { class: "actions" }, manage));
 }
 
 async function loadChoices() {
   try { models = (await api("/models")).models; } catch (e) { models = []; }
-  try { allSkills = (await api("/skills")).skills; } catch (e) { allSkills = []; }
+  try { takeSkills(await api("/skills")); } catch (e) { allSkills = []; }
   showControls();
+}
+
+// -- managing skills ------------------------------------------------------------------------------
+// Everyone has skills of their own and shares the rest; either kind can be made, changed, moved to
+// the other kind, renamed or deleted here. What a session has turned on is its own business.
+
+let skillLibrary = { personal: [], shared: [] };
+let editingSkill = null;                   // {scope, name} of the skill in the form; null for a new one
+
+function takeSkills(data) {
+  allSkills = data.skills;
+  skillLibrary = data.library;
+}
+
+function openSkills() {
+  closePanels();
+  $("#skills-sheet").hidden = false;
+  showSkillList();
+}
+
+function closeSkills() {
+  $("#skills-sheet").hidden = true;
+  showControls();
+}
+
+function showSkillList() {
+  editingSkill = null;
+  $("#skill-form").hidden = true;
+  $("#skills-list").hidden = false;
+  $("#skill-new").hidden = $("#skills-done").hidden = false;
+  $("#skills-heading").textContent = "Skills";
+  const mine = new Set(skillLibrary.personal.map((k) => k.name));
+  const shared = new Set(skillLibrary.shared.map((k) => k.name));
+  const section = (title, list, empty, aside) => [
+    el("li", { class: "section" }, title),
+    ...(list.length ? list.map((k) => {
+      const about = [k.description, aside(k)].filter(Boolean).join(" · ");
+      const b = el("button", { type: "button" }, k.name, about ? el("small", {}, about) : null);
+      b.addEventListener("click", () => editSkill(k));
+      return el("li", {}, b);
+    }) : [el("li", { class: "empty" }, empty)]),
+  ];
+  $("#skills-list").replaceChildren(
+    ...section("Just yours", skillLibrary.personal, "None yet. Only you see the skills you keep here.",
+               (k) => shared.has(k.name) ? "used instead of the shared one" : ""),
+    ...section("Shared with everyone", skillLibrary.shared, "None yet.",
+               (k) => mine.has(k.name) ? "yours of this name is used instead" : ""));
+}
+
+async function editSkill(k) {
+  try { showSkillForm(await api(`/skills/${encodeURIComponent(k.scope)}/${encodeURIComponent(k.name)}`)); }
+  catch (e) { note(e.message, "error"); }
+}
+
+function showSkillForm(skill) {
+  editingSkill = skill.name ? { scope: skill.scope, name: skill.name } : null;
+  $("#skills-list").hidden = true;
+  $("#skill-form").hidden = false;
+  $("#skill-new").hidden = $("#skills-done").hidden = true;
+  $("#skills-heading").textContent = editingSkill ? skill.name : "New skill";
+  $("#skill-name").value = skill.name || "";
+  for (const radio of document.getElementsByName("skill-scope")) radio.checked = radio.value === (skill.scope || "personal");
+  $("#skill-description").value = skill.description || "";
+  $("#skill-body").value = skill.body || "";
+  $("#skill-rename-hint").hidden = true;
+  const del = $("#skill-delete");
+  del.hidden = !editingSkill;
+  del.classList.remove("asking");
+  del.textContent = "Delete";
+  skillStatus("");
+  (editingSkill ? $("#skill-body") : $("#skill-name")).focus();
+}
+
+function skillStatus(text, error = false) {
+  $("#skill-status").textContent = text;
+  $("#skill-status").classList.toggle("error", error);
+}
+
+async function skillRequest(method, path, body) {
+  const res = await fetch("/api" + path, {
+    method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function saveSkill(e) {
+  e.preventDefault();
+  const scope = [...document.getElementsByName("skill-scope")].find((r) => r.checked)?.value || "personal";
+  try {
+    takeSkills(await skillRequest("POST", "/skills", {
+      scope, name: $("#skill-name").value.trim(), description: $("#skill-description").value,
+      body: $("#skill-body").value, was: editingSkill }));
+    showSkillList();
+  } catch (err) {
+    skillStatus(err.message, true);
+  }
+}
+
+async function deleteSkill() {
+  const del = $("#skill-delete");
+  if (!del.classList.contains("asking")) {  // ask once, in place
+    del.classList.add("asking");
+    del.textContent = "Delete it? Click again";
+    return;
+  }
+  try {
+    takeSkills(await skillRequest("DELETE",
+      `/skills/${encodeURIComponent(editingSkill.scope)}/${encodeURIComponent(editingSkill.name)}`));
+    showSkillList();
+  } catch (err) {
+    skillStatus(err.message, true);
+  }
 }
 
 // -- rename, export, delete --------------------------------------------------------------------
@@ -1526,7 +1704,21 @@ $("#delete-btn").addEventListener("click", askDelete);
 document.addEventListener("click", (e) => { if (!e.target.closest(".controls")) closePanels(); });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (!$("#picker").hidden) { e.preventDefault(); closePicker(); } else closePanels();
+  if (!$("#skills-sheet").hidden) {          // the form goes back to the list; the list closes
+    e.preventDefault();
+    if (!$("#skill-form").hidden) showSkillList(); else closeSkills();
+  } else if (!$("#picker").hidden) { e.preventDefault(); closePicker(); } else closePanels();
+});
+$("#skill-new").addEventListener("click", () => showSkillForm({}));
+$("#skills-done").addEventListener("click", closeSkills);
+$("#skill-cancel").addEventListener("click", showSkillList);
+$("#skill-delete").addEventListener("click", deleteSkill);
+$("#skill-form").addEventListener("submit", saveSkill);
+$("#skill-name").addEventListener("input", () => {
+  $("#skill-rename-hint").hidden = !editingSkill || $("#skill-name").value.trim() === editingSkill.name;
+});
+$("#skills-sheet").addEventListener("click", (e) => {   // outside the sheet: only the list closes
+  if (e.target === $("#skills-sheet") && $("#skill-form").hidden) closeSkills();
 });
 $("#attach").addEventListener("click", () => $("#file").click());
 $("#browse").addEventListener("click", openPicker);

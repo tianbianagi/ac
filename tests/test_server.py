@@ -353,7 +353,58 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([m["name"] for m in body["models"]], ["m1", "m2:latest"])
         write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku", description="Poetry mode")
         _, body = self.get("/api/skills")
-        self.assertEqual(body["skills"], [{"name": "haiku", "description": "Poetry mode"}])
+        self.assertEqual(body["skills"],
+                         [{"name": "haiku", "description": "Poetry mode", "scope": "other"}])
+
+    def test_skills_are_managed_from_the_page(self):
+        config_dir = Path(os.environ["AC_CONFIG_DIR"])
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text("[users.hagi]\n")
+        mine, shared = config_dir / "users" / self.store.user / "skills", config_dir / "skills"
+        hers = {"X-Acc-User": "hagi"}
+
+        status, body = self.post("/api/skills", {"scope": "personal", "name": "brief",
+                                                 "description": "Short: \"direct\"", "body": "Be brief."})
+        self.assertEqual((status, body["skill"]), (200, {
+            "scope": "personal", "name": "brief", "description": "Short: \"direct\"", "body": "Be brief."}))
+        self.assertEqual(body["library"], {"personal": [
+            {"name": "brief", "description": "Short: \"direct\"", "scope": "personal"}], "shared": []})
+        self.assertTrue((mine / "brief" / "SKILL.md").is_file())
+        self.assertEqual(self.get("/api/skills", headers=hers)[1]["skills"], [])    # not hers
+
+        (mine / "brief" / "notes.txt").write_text("kept")         # other files go along with it
+        status, body = self.post("/api/skills", {"scope": "shared", "name": "terse", "description": "",
+                                                 "body": "Be terse.", "was": {"scope": "personal",
+                                                                              "name": "brief"}})
+        self.assertEqual(status, 200)
+        self.assertFalse((mine / "brief").exists())
+        self.assertEqual((shared / "terse" / "notes.txt").read_text(), "kept")
+        self.assertEqual(self.get("/api/skills", headers=hers)[1]["skills"],
+                         [{"name": "terse", "description": "", "scope": "shared"}])
+        self.assertEqual(self.get("/api/skills/shared/terse")[1]["body"], "Be terse.")
+
+        self.post("/api/skills", {"scope": "personal", "name": "terse", "body": "Mine wins."})
+        _, body = self.get("/api/skills")
+        self.assertEqual(body["skills"], [{"name": "terse", "description": "", "scope": "personal"}])
+        self.assertEqual([k["name"] for k in body["library"]["shared"]], ["terse"])
+
+        for bad in ({"scope": "shared", "name": "Bad Name", "body": "x"},
+                    {"scope": "shared", "name": "ok", "body": "  "},
+                    {"scope": "elsewhere", "name": "ok", "body": "x"},
+                    {"scope": "shared", "name": "ok", "body": "x", "was": {"scope": "shared", "name": "gone"}},
+                    {"scope": "personal", "name": "terse", "body": "x",       # would overwrite another
+                     "was": {"scope": "shared", "name": "terse"}}):
+            self.assertEqual(self.post("/api/skills", bad)[0], 400, bad)
+        self.assertEqual(self.get("/api/skills/shared/nope")[0], 404)
+        self.assertEqual(self.get("/api/skills/personal/..")[0], 404)
+
+        status, body = self.delete("/api/skills/shared/terse", hers)       # shared: anyone may
+        self.assertEqual((status, body["deleted"]), (200, "terse"))
+        self.assertEqual((shared / "terse" / "notes.txt").read_text(), "kept")
+        self.assertFalse((shared / "terse" / "SKILL.md").exists())
+        self.assertEqual(self.delete("/api/skills/personal/terse", hers)[0], 404)   # not hers
+        self.assertEqual(self.delete("/api/skills/personal/terse")[0], 200)
+        self.assertFalse((mine / "terse").exists())
 
     def test_change_a_sessions_model_and_skills(self):
         write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku")

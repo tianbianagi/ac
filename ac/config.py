@@ -33,14 +33,24 @@ def config_dir():
     return Path.home() / "accspace" / "config"
 
 
+def shared_skills_dir():
+    """The skill library everyone shares."""
+    return config_dir() / "skills"
+
+
+def personal_skills_dir(user):
+    """One user's own skill library."""
+    return config_dir() / "users" / user / "skills"
+
+
 def skills_dirs(user=None):
-    """Skill search path: AC_SKILLS_PATH entries first, then the user's own library
-    (users/<user>/skills, when a user is given), then the library everyone shares."""
+    """Skill search path: AC_SKILLS_PATH entries first, then the user's own library (when a
+    user is given), then the library everyone shares."""
     extra = os.environ.get("AC_SKILLS_PATH", "")
     dirs = [Path(p).expanduser() for p in extra.split(os.pathsep) if p]
     if user:
-        dirs.append(config_dir() / "users" / user / "skills")
-    dirs.append(config_dir() / "skills")
+        dirs.append(personal_skills_dir(user))
+    dirs.append(shared_skills_dir())
     return dirs
 
 
