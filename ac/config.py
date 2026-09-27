@@ -72,29 +72,6 @@ def speaker_names():
             "assistant": str(chosen.get("assistant_name") or "Assistant")}
 
 
-def _switch(env, key):
-    """An on-by-default setting: the environment variable, then the config.toml key."""
-    value = os.environ.get(env)
-    if value is not None:
-        return value.lower() not in ("0", "false", "no", "off", "")
-    return bool(settings().get(key, True))
-
-
-def markdown():
-    """Whether replies are rendered as markdown: $AC_MARKDOWN, then markdown in config.toml."""
-    return _switch("AC_MARKDOWN", "markdown")
-
-
-def status_bar():
-    """Whether a status bar is pinned to the last row of the terminal: $AC_STATUS_BAR, then
-    status_bar in config.toml. Off, the numbers are printed after each reply instead."""
-    return _switch("AC_STATUS_BAR", "status_bar")
-
-
-def history_path():
-    return _xdg("XDG_STATE_HOME", ".local/state") / "history"
-
-
 def ollama_host():
     """Base URL of the Ollama server, accepting the same OLLAMA_HOST forms Ollama does."""
     host = os.environ.get("OLLAMA_HOST", "").strip() or "127.0.0.1:11434"

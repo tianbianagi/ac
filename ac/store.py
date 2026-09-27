@@ -74,7 +74,7 @@ CREATE INDEX attachments_message ON attachments(message_id);
 # Who wrote the title: "auto" (the first message), "model" or "user".
 TITLE_SOURCE_SCHEMA = "ALTER TABLE sessions ADD COLUMN title_source TEXT;"
 
-# Names the user gave to paths (/files PATH... @NAME), usable from every session as @NAME.
+# Names the user gave to paths, usable from every session as @NAME.
 # path holds a JSON list; a row from before names could hold several paths is one bare path.
 RESOURCES_SCHEMA = """
 CREATE TABLE resources (

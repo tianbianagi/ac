@@ -107,15 +107,6 @@ class FilesTest(unittest.TestCase):
         self.assertEqual([p.name for p in files.here("sub")], ["deep.py"])
         self.assertEqual(len(files.here(limit=1)), 1)
 
-    def test_complete(self):
-        self.assertEqual(files.complete("./no"), ["./notes.md"])
-        self.assertEqual(files.complete("@no"), ["@notes.md"])
-        self.assertEqual(files.complete("sub/"), ["sub/deep.py"])
-        self.assertEqual(files.complete("./s"), ["./sub/"])
-        self.assertEqual(files.complete("./my"), ["./my\\ file.txt"])
-        self.assertEqual(files.complete(f"{self.root}/pi"), [f"{self.root}/pic.PNG"])
-        self.assertEqual(files.complete("/definitely/not/he"), [])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -47,12 +47,11 @@ class CliTest(unittest.TestCase):
         self.addCleanup(store.close)
         return store
 
-    def test_default_command(self):
-        self.assertEqual(cli._default_command([]), ["new"])
-        self.assertEqual(cli._default_command(["-m", "x"]), ["new", "-m", "x"])
-        self.assertEqual(cli._default_command(["-c"]), ["resume", "--latest"])
-        self.assertEqual(cli._default_command(["ls"]), ["ls"])
-        self.assertEqual(cli._default_command(["--help"]), ["--help"])
+    def test_no_command_prints_help(self):
+        code, out, _ = self.ac()
+        self.assertEqual(code, 0)
+        self.assertIn("serve", out)
+        self.assertEqual(self.ac("resume")[0], 2)      # the terminal chat is gone
 
     def test_ask_prints_only_the_answer_and_saves_a_session(self):
         self.fake.reply("4", thinking="two plus two")
@@ -195,9 +194,6 @@ class CliTest(unittest.TestCase):
     def test_errors_are_one_line(self):
         code, _, err = self.ac("show", "nope")
         self.assertEqual((code, err), (1, "acc: no session matches 'nope'\n"))
-        code, _, err = self.ac("resume")
-        self.assertEqual(code, 1)
-        self.assertIn("no sessions yet", err)
 
     def test_skills_and_models(self):
         _, out, _ = self.ac("skills")
@@ -228,13 +224,6 @@ class CliTest(unittest.TestCase):
             self.assertEqual(config.config_path(), moved / "config.toml")
             _, out, _ = self.ac("skills")
         self.assertRegex(out, r"haiku\s+Poetry mode")
-
-    def test_interactive_new_with_piped_input(self):
-        self.fake.reply("Hello!")
-        code, out, _ = self.ac("-m", "m1", "--title", "Piped", stdin="hi\n/quit\n")
-        self.assertEqual(code, 0)
-        self.assertIn("Hello!", out)
-        self.assertEqual(self.store().get("piped").message_count, 2)
 
 
 if __name__ == "__main__":

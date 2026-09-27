@@ -107,7 +107,7 @@ class PatternTest(unittest.TestCase):
         attachments, _ = files.collect("one proj/main.py and the rest proj/src/**")
         self.assertEqual(files.announce(attachments), [
             f"attached {files.display_path(self.root / 'proj/main.py')} (text, 14 B)",
-            "attached 3 files from proj/src/** (44 B); /files lists them"])
+            "attached 3 files from proj/src/** (44 B)"])
         self.assertEqual(len(files.summarize(attachments)), 4)  # few enough to list
         many, _ = files.collect("all of proj/**")
         lines = files.summarize(many + attachments)

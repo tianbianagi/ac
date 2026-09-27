@@ -5,10 +5,8 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, config, files, picker, render, server, skills, titles
+from . import __version__, chat, config, files, render, server, skills, titles
 from .ollama import Client, OllamaError, pick_model, resolve_model
-from .repl import Repl, setup_readline
-from .statusbar import StatusBar
 from .store import Store, StoreError
 
 
@@ -20,42 +18,6 @@ def open_store(path=None):
     store = Store(path or config.db_path())
     _open_stores.append(store)
     return store
-
-
-def _interactive(store, client, session):
-    repl = Repl(store, client, session)
-    if sys.stdin.isatty():
-        setup_readline(repl)
-    if picker.available():
-        repl.picker = picker.pick
-        if config.status_bar():
-            repl.bar = StatusBar()
-    repl.run()
-
-
-def cmd_new(args):
-    store, client = open_store(), Client()
-    session = store.draft(pick_model(client, args.model), title=args.title,
-                          system=args.system,
-                          skills=[skills.normalize_ref(s) for s in args.skill])
-    _interactive(store, client, session)
-
-
-def cmd_resume(args):
-    store = open_store()
-    if args.id:
-        session = store.get(args.id)
-    elif args.latest or not picker.available() or len(store.list()) < 2:
-        session = store.latest()
-    else:                                   # `acc resume` alone: choose from a list
-        session = picker.pick(store.list(), render.session_label, title="Sessions",
-                              search=lambda q: store.list(search=q), key=lambda s: s.id,
-                              delete=lambda s: store.delete(s.id))
-        if session is None:
-            return 0                        # cancelled
-    if session is None:
-        raise StoreError(f"no sessions yet. Start one with `{config.COMMAND}`.")
-    _interactive(store, Client(), session)
 
 
 def cmd_ls(args):
@@ -72,8 +34,7 @@ def cmd_show(args):
                     f"skills: {render.skills_label(session.skills)}"))
     for m in store.messages(session.id):
         print()
-        print(render.format_message(m, style, thinking=args.thinking,
-                                    markdown=config.markdown()))
+        print(render.format_message(m, style, thinking=args.thinking))
 
 
 def cmd_rename(args):
@@ -196,14 +157,8 @@ def cmd_ask(args):
         store = open_store(":memory:" if args.no_save else None)
         session = store.draft(pick_model(client, args.model), system=args.system,
                               skills=[skills.normalize_ref(s) for s in args.skill])
-    repl = Repl(store, client, session, out=sys.stdout, log=sys.stderr, quiet=True)
-    try:
-        reply = repl.send(prompt.strip())
-    except KeyboardInterrupt:
-        return 130
-    if reply is None or reply.status != "complete":
-        return 130 if reply is not None and reply.status == "interrupted" else 1
-    return 0
+    status = chat.ask(store, client, session, prompt.strip())
+    return {"complete": 0, "interrupted": 130}.get(status, 1)
 
 
 def cmd_skills(args):
@@ -252,8 +207,8 @@ def cmd_serve(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=config.COMMAND, description="Agentless chat with local Ollama models. "
-        f"Run with no command to start a new session; `{config.COMMAND} -c` continues the "
-        "latest one.")
+        f"`{config.COMMAND} serve` opens the app in a browser; the other commands work on its "
+        "sessions from the terminal.")
     parser.add_argument("--version", action="version", version=f"{config.COMMAND} {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
@@ -267,14 +222,6 @@ def build_parser():
         p.add_argument("-s", "--skill", action="append", default=[], metavar="NAME|PATH",
                        help="attach a skill (repeatable)")
         p.add_argument("--system", help="session-specific system text")
-
-    p = add("new", cmd_new, "start a new chat session")
-    session_setup(p)
-    p.add_argument("--title")
-
-    p = add("resume", cmd_resume, "continue a session: pick from a list, or name one")
-    p.add_argument("id", nargs="?", help="id, id prefix or title; omit to choose from a list")
-    p.add_argument("--latest", action="store_true", help="the most recent one (same as acc -c)")
 
     p = add("ls", cmd_ls, "list sessions", aliases=["list"])
     p.add_argument("--search", metavar="QUERY", help="match titles and message text")
@@ -337,20 +284,12 @@ def build_parser():
     return parser
 
 
-def _default_command(argv):
-    """`acc` and `acc -m x` mean `acc new ...`; `acc -c` means `acc resume --latest`."""
-    if not argv:
-        return ["new"]
-    if argv[0] in ("-c", "--continue"):
-        return ["resume", "--latest"] + argv[1:]
-    if argv[0].startswith("-") and argv[0] not in ("-h", "--help", "--version"):
-        return ["new"] + argv
-    return argv
-
-
 def main(argv=None):
-    argv = _default_command(list(sys.argv[1:] if argv is None else argv))
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if not args.command:
+        parser.print_help()
+        return 0
     try:
         return args.func(args) or 0
     except (StoreError, skills.SkillError, OllamaError) as e:

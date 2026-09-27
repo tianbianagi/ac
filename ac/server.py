@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import config, files, render, skills, titles
 from .ollama import Client, OllamaError, pick_model, resolve_model
-from .repl import RESERVED_OPTIONS, build_messages
+from .chat import RESERVED_OPTIONS, build_messages
 from .store import Ambiguous, NotFound, Store, StoreError, first_message_title
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
@@ -130,7 +130,7 @@ def path_refs(paths, names):
 
 def browse(folder):
     """What a folder on this machine holds, for the page's picker: folders first, then files,
-    leaving out what /files leaves out. Paths stay as they were reached, so a folder entered
+    leaving out hidden, ignored and dependency files. Paths stay as they were reached, so a folder entered
     through a symlink (~/accspace) keeps that name rather than where the link points."""
     path = Path(os.path.abspath(Path(folder or "~").expanduser()))
     if not path.is_dir():
@@ -420,7 +420,7 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
 
     def _delete_attachment(self, ref):
-        """Take one file out of a conversation, as Ctrl-D does in /files: the message it came
+        """Take one file out of a conversation: the message it came
         with stays, the file on disk is never touched, and the model doesn't see it again."""
         store = Store(self.db_path)
         try:
