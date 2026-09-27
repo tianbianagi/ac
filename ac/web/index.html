@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>acc</title>
 <link rel="manifest" href="/static/manifest.webmanifest">
-<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<!-- Inline: iOS fetches the home-screen icon without the page's client certificate, so behind
+     mTLS a linked icon never arrives. This is static/apple-touch-icon.png. -->
+<link rel="apple-touch-icon" href="data:image/png;base64,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">
 <meta name="apple-mobile-web-app-title" content="acc">
 <meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#1b1a18" media="(prefers-color-scheme: dark)">
@@ -61,6 +63,13 @@ button { font: inherit; cursor: pointer; }
 .rename:hover { background: var(--panel); color: var(--accent); }
 .rename svg { width: 15px; height: 15px; }
 .rename[hidden] { display: none; }
+#header-toggle { margin-left: auto; }
+#header-toggle svg { transition: transform .15s; }
+body.header-collapsed #header-toggle svg { transform: rotate(180deg); }
+body.header-collapsed #main > header { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+body.header-collapsed .title-row { flex: 1; min-width: 0; }
+body.header-collapsed #main > header h2 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.header-collapsed .meta-row, body.header-collapsed .controls { display: none; }
 #sidebar footer { display: flex; justify-content: flex-end; align-items: center; padding: 8px; }
 .archived-link { margin-right: auto; border: 0; background: none; color: var(--muted); font-size: 13px;
                  padding: 6px 8px; border-radius: 6px; }
@@ -143,8 +152,8 @@ select.btn { padding-right: 8px; max-width: 100%; }
          font: inherit; line-height: 1.45; }
 #input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 #composer .btn { padding: 10px 16px; font-size: 14px; }
-.status-line { max-width: 780px; margin: 6px auto 0; font-size: 12px; color: var(--muted);
-               font-variant-numeric: tabular-nums; min-height: 1.4em; }
+.meta-row { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; }
+.status-line { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .status-line .meter { display: inline-block; width: 48px; height: 5px; border-radius: 3px; background: var(--line);
                       vertical-align: middle; margin: 0 6px 1px 0; overflow: hidden; }
 .status-line .meter i { display: block; height: 100%; background: var(--muted); }
@@ -239,6 +248,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
   body.sidebar-collapsed .rail { display: none; }
   #back { display: inline; background: none; border: 0; color: var(--accent); font: inherit;
           padding: 0; margin-bottom: 4px; cursor: pointer; }
+  body.header-collapsed #back { margin-bottom: 0; flex: none; }
   #main > header, #chat, #composer { padding-left: 16px; padding-right: 16px; }
 }
 </style>
@@ -266,8 +276,9 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
     <div class="title-row">
       <h2 id="title"></h2>
       <button id="rename-btn" class="rename" type="button" title="Rename" aria-label="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M17.5 2.5a2.1 2.1 0 0 1 3 3L12 14l-4 1 1-4z"/></svg></button>
+      <button id="header-toggle" class="rename" type="button" aria-expanded="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg></button>
     </div>
-    <div id="meta" class="meta"></div>
+    <div class="meta-row"><span id="meta" class="meta"></span><span id="status" class="status-line" aria-live="polite"></span></div>
     <div class="controls">
       <select id="model" class="btn" aria-label="Model"></select>
       <button id="skills-btn" class="btn" type="button" aria-expanded="false">Skills: none</button>
@@ -298,7 +309,6 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
       <button id="go" class="btn primary" type="submit">Send</button>
     </form>
-    <div id="status" class="status-line" aria-live="polite"></div>
   </div>
 </main>
 <div id="picker" hidden>
@@ -1093,7 +1103,7 @@ function scrollDown(force) {
 
 // -- context and speed ----------------------------------------------------------------------------
 
-// What the line under the message box shows: context in use as the latest reply left it, and
+// What the header shows beside the session id: context in use as the latest reply left it, and
 // how fast replies come. While one streams, its speed is counted live (a chunk is a token).
 const stats = { usage: null, speed: null, live: null };
 
@@ -1329,6 +1339,20 @@ document.addEventListener("keydown", (e) => {
   }
 });
 showSidebar(!["collapsed", "hidden"].includes(remembered("acc.sidebar")));
+
+// The header can fold to just the title, which matters most on a phone; remembered like the list.
+function foldHeader(fold) {
+  document.body.classList.toggle("header-collapsed", fold);
+  const label = fold ? "Show session details" : "Hide session details";
+  $("#header-toggle").setAttribute("aria-expanded", String(!fold));
+  $("#header-toggle").setAttribute("aria-label", label);
+  $("#header-toggle").title = label;
+  if (fold) closePanels();
+  remembered("acc.header", fold ? "collapsed" : "shown");
+}
+$("#header-toggle").addEventListener("click", () =>
+  foldHeader(!document.body.classList.contains("header-collapsed")));
+foldHeader(remembered("acc.header") === "collapsed");
 $("#model").addEventListener("change", () => change({ model: $("#model").value }));
 $("#skills-btn").addEventListener("click", () => { if (togglePanel("#skills-panel", "#skills-btn")) fillSkills(); });
 $("#export-btn").addEventListener("click", () => togglePanel("#export-panel", "#export-btn"));
