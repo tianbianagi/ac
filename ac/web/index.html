@@ -34,6 +34,8 @@ body { background: var(--bg); color: var(--text); font: 15px/1.55 var(--sans); d
 #sidebar header { padding: 14px 14px 10px; }
 #sidebar .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 #sidebar h1 { font-size: 15px; margin: 0; color: var(--accent); letter-spacing: .02em; }
+#sidebar .who { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+#me { font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 button { font: inherit; cursor: pointer; }
 .btn { border: 1px solid var(--line); background: var(--bg); color: var(--text); border-radius: 8px;
        padding: 5px 12px; font-size: 13px; }
@@ -266,7 +268,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
 <body>
 <nav id="sidebar">
   <header>
-    <div class="top"><h1>acc</h1><button id="new" class="new-chat" type="button" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
+    <div class="top"><div class="who"><h1>acc</h1><span id="me"></span></div><button id="new" class="new-chat" type="button" title="New chat" aria-label="New chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
     <input id="search" type="search" placeholder="Search sessions" autocomplete="off">
   </header>
   <ul id="sessions"></ul>
@@ -1546,7 +1548,10 @@ window.addEventListener("hashchange", () => {
 });
 
 (async () => {
-  try { names = (await api("/config")).names; } catch {}
+  try {
+    names = (await api("/config")).names;
+    $("#me").textContent = names.user;     // whose sessions these are: acc can serve several people
+  } catch {}
   loadNames();
   await loadSessions();
   loadChoices();
