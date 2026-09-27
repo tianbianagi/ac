@@ -5,7 +5,7 @@ name passed with --allow-host, for a proxy in front of it), since it can read ev
 the files a message names. Each request opens its own connection
 to the database, so the server can answer several at once.
 
-It serves the users config.toml names, each with their own sessions, @names and skills. The
+It serves the users config.toml names, each with their own sessions and skills. The
 proxy says who is asking in the X-Acc-User header, from the client certificate it checked; a
 request without one (as from a browser on this machine) is the owner's.
 """
@@ -133,6 +133,39 @@ def path_refs(paths, names):
     return refs, problems
 
 
+def read_uploads_queued(queue):
+    """What the page queued, in its order, with each upload already read, so a broken one is
+    refused before anything is saved: entries {"upload": {"name", "data"}} (see read_uploads)
+    become (attachments, notes); entries {"path": ...} stay as the path, for read_queue."""
+    if not isinstance(queue, list):
+        raise BadRequest("queue must be a list")
+    read = []
+    for item in queue:
+        if isinstance(item, dict) and "upload" in item:
+            read.append(read_uploads([item["upload"]]))
+        elif isinstance(item, dict) and "path" in item:
+            read.append(str(item["path"]))
+        else:
+            raise BadRequest("each queued entry is an upload or a path")
+    return read
+
+
+def read_queue(read, names):
+    """Attachments for what the page queued, in the order it was queued, plus lines the user
+    should see: read_uploads_queued's entries, with each path read as path_refs finds it."""
+    attachments, notes = [], []
+    for item in read:
+        if isinstance(item, str):
+            refs, problems = path_refs([item], names)
+            got, said = files.read_refs(refs, already=attachments)
+            said = problems + said
+        else:
+            got, said = item
+        attachments += got
+        notes += said
+    return attachments, notes
+
+
 def browse(folder):
     """What a folder on this machine holds, for the page's picker: folders first, then files,
     leaving out hidden, ignored and dependency files. Paths stay as they were reached, so a folder entered
@@ -230,18 +263,50 @@ def tagged_path(store, request):
     return str(request.get("path") or "").strip()
 
 
-def tag_file(store, request):
-    """Tag a file, or untag it, from {"path" | "upload" | "attachment" (see tagged_path), "tag":
-    TAG, "remove": bool}. A tag is an @name: @TAG in a message attaches every file tagged with
-    it, as they are then. A tag left with no files is forgotten; files are never deleted."""
-    tag = str(request.get("tag") or "").strip().lstrip("@").lower()
+def check_tag(tag):
+    tag = str(tag or "").strip().lstrip("@").lower()
     if not files.NAME.fullmatch(tag):
         raise BadRequest("a tag is letters, digits, - and _, starting with a letter or digit")
+    return tag
+
+
+def draft_tags(raw):
+    """The tags a new chat's page holds until its first message makes the session, as
+    {TAG: [path, ...]}: sent with that message, and with a picker lookup before it."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raise BadRequest("bad tags") from None
+    if not isinstance(raw, dict):
+        raise BadRequest("tags must map each tag to its paths")
+    tags = {}
+    for tag, paths in raw.items():
+        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            raise BadRequest("tags must map each tag to its paths")
+        kept = [files.portable(p) for p in paths if p.startswith(("/", "~"))]
+        if kept:
+            tags[check_tag(tag)] = list(dict.fromkeys(kept))
+    return tags
+
+
+def tag_file(store, request):
+    """Tag a file, or untag it, from {"session": ID, "path" | "upload" | "attachment" (see
+    tagged_path), "tag": TAG, "remove": bool}. A tag is an @name of that session: @TAG in one of
+    its messages attaches every file tagged with it, as they are then. A tag left with no files
+    is forgotten; files are never deleted. Without a session (a new chat) nothing is saved: the
+    answer's "portable" path is for the page to keep until the first message."""
+    tag = check_tag(request.get("tag"))
+    session = store.get(str(request["session"])) if request.get("session") else None
     word = tagged_path(store, request)
     if not word.startswith(("/", "~")):
         raise BadRequest("only a file on this machine can be tagged")
     path = files.portable(word)
-    paths = store.resources().get(tag, [])
+    if session is None:
+        if not request.get("remove") and files.resolve(word, explicit=True) is None:
+            raise BadRequest(f"nothing matches {word}")
+        return {"tag": tag, "path": os.path.realpath(path), "portable": path}
+    paths = store.resources(session.id).get(tag, [])
     if request.get("remove"):             # however it was reached: through a link or not
         paths = [p for p in paths if os.path.realpath(p) != os.path.realpath(path)]
     else:
@@ -249,9 +314,9 @@ def tag_file(store, request):
             raise BadRequest(f"nothing matches {word}")
         paths = list(dict.fromkeys(paths + [path]))
     if paths:
-        store.set_resource(tag, paths)
+        store.set_resource(session.id, tag, paths)
     else:
-        store.delete_resource(tag)
+        store.delete_resource(session.id, tag)
     return {"tag": tag, "paths": paths, "path": os.path.realpath(path)}
 
 
@@ -280,9 +345,10 @@ def update_session(store, client, session, request):
 
 def chat(store, client, request):
     """One turn, as events for the page: the session, the user's message, the reply as it
-    streams, then the saved reply. {"session": ID?, "text": ..., "model": ...?} sends a
-    message, starting a new session when no id is given; {"session": ID, "retry": true} asks
-    again for the reply to the last message.
+    streams, then the saved reply. {"session": ID?, "text": ..., "model": ...?, "queue": [...]?}
+    sends a message, starting a new session when no id is given, with the files queued for it
+    (see read_queue; "files" and "paths" say the same as uploads then paths); {"session": ID,
+    "retry": true} asks again for the reply to the last message.
 
     Closing the generator mid-reply is the page going away: the partial reply is kept, marked
     interrupted, as Ctrl-C keeps it in the terminal.
@@ -298,7 +364,14 @@ def chat(store, client, request):
     else:
         session = store.draft(pick_model(client, request.get("model") or None))
         update_session(store, client, session, {"skills": request.get("skills") or []})
-    uploaded, upload_notes = read_uploads(request.get("files") or []) if not retry else ([], [])
+    tags = draft_tags(request.get("tags") or {}) if not session.persisted else {}
+    queue = request.get("queue")
+    if queue is None:
+        uploads, paths = request.get("files") or [], request.get("paths") or []
+        if not isinstance(uploads, list) or not isinstance(paths, list):
+            raise BadRequest("files and paths must be lists")
+        queue = [{"upload": f} for f in uploads] + [{"path": p} for p in paths]
+    queue = read_uploads_queued(queue) if not retry else []
 
     if retry:
         messages = store.messages(session.id)
@@ -312,16 +385,16 @@ def chat(store, client, request):
         if not session.persisted:
             session.title, session.title_source = first_message_title(text), "auto"
             store.save(session)
+            for tag, paths in tags.items():     # what the new chat's page tagged before this
+                store.set_resource(session.id, tag, paths)
         if session.archived_at:             # a new message brings it back, as in a mail inbox
             store.set_archived(session.id, False)
-        names = store.resources()
-        refs, picked_problems = path_refs(request.get("paths") or [], names)
-        picked, picked_notes = files.read_refs(refs, already=uploaded)
-        found, problems = files.collect(text, names, already=uploaded + picked)
-        attachments = uploaded + picked + found
-        problems = picked_problems + picked_notes + problems
+        names = store.resources(session.id)
+        queued, queue_notes = read_queue(queue, names)
+        found, problems = files.collect(text, names, already=queued)
+        attachments = queued + found
         yield {"type": "session", "session": session_json(store.get(session.id))}
-        for line in upload_notes + problems + files.announce(attachments):
+        for line in queue_notes + problems + files.announce(attachments):
             yield {"type": "note", "text": line}
         sent = store.add_message(session.id, "user", text, attachments=attachments)
         yield {"type": "message", "message": message_json(sent)}
@@ -430,6 +503,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._api(store, path[len("/api"):], parse_qs(url.query))
         except (NotFound, Ambiguous) as e:
             return self._error(404, str(e))
+        except BadRequest as e:
+            return self._error(400, str(e))
         finally:
             store.close()
 
@@ -460,6 +535,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(tag_file(store, request))
                 except BadRequest as e:
                     return self._error(400, str(e))
+                except (NotFound, Ambiguous) as e:
+                    return self._error(404, str(e))
             if path.startswith("/api/sessions/") and path.endswith("/export"):
                 return self._export(store, unquote(path[len("/api/sessions/"):-len("/export")]),
                                     request)
@@ -604,12 +681,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/browse":
             return self._json(browse((query.get("dir") or [""])[0]))
         if path == "/match":
-            return self._json(match((query.get("path") or [""])[0], store.resources()))
+            return self._json(match((query.get("path") or [""])[0], self._names(store, query)))
         if path == "/names":
             return self._json({"names": [
                 {"name": name, "paths": [files.display_path(p) for p in paths],
                  "real": [os.path.realpath(p) for p in paths]}
-                for name, paths in store.resources().items()]})
+                for name, paths in self._names(store, query).items()]})
         if path == "/skills":
             found = skills.discover(config.skills_dirs(store.user))
             return self._json({"skills": [{"name": s.name, "description": s.description}
@@ -625,6 +702,13 @@ class Handler(BaseHTTPRequestHandler):
                         "application/octet-stream")
             return self._send(200, a.data, kind)
         return self._error(404, "not found")
+
+    def _names(self, store, query):
+        """The @names a lookup may use: those of ?session=ID, or a new chat's ?tags=JSON."""
+        ref = (query.get("session") or [""])[0]
+        if ref:
+            return store.resources(store.get(ref).id)
+        return draft_tags((query.get("tags") or ["{}"])[0])
 
     def _host_ok(self):
         """Only requests addressed to this machine by name: a page elsewhere can't reach the

@@ -106,9 +106,25 @@ DROP TABLE resources;
 ALTER TABLE owned_resources RENAME TO resources;
 """
 
+# Names belong to one session: @NAME means what that conversation named. A name from before is
+# given to every session of the user who made it, so none of them loses one.
+SESSION_RESOURCES_SCHEMA = """
+CREATE TABLE session_resources (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (session_id, name)
+);
+INSERT INTO session_resources
+    SELECT s.id, r.name, r.path, r.created_at FROM resources r JOIN sessions s ON s.owner = r.owner;
+DROP TABLE resources;
+ALTER TABLE session_resources RENAME TO resources;
+"""
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
 MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA, ARCHIVED_SCHEMA,
-              OWNER_SCHEMA]
+              OWNER_SCHEMA, SESSION_RESOURCES_SCHEMA]
 
 
 class StoreError(Exception):
@@ -192,7 +208,7 @@ def _fts_query(text):
 
 
 class Store:
-    """One user's view of the database: their sessions and names, never anyone else's.
+    """One user's view of the database: their sessions, never anyone else's.
     The owner's unless another user is given."""
 
     def __init__(self, path, user=None):
@@ -386,28 +402,34 @@ class Store:
                    JOIN messages copy ON copy.session_id = ? AND copy.seq = orig.seq
                    WHERE orig.session_id = ? AND orig.seq <= ?""",
                 (new.id, src.id, at_seq))
+            self.db.execute(
+                """INSERT INTO resources (session_id, name, path, created_at)
+                   SELECT ?, name, path, created_at FROM resources WHERE session_id = ?""",
+                (new.id, src.id))
         return self.get(new.id)
 
     # -- named paths ------------------------------------------------------
 
-    def resources(self):
-        """{name: [paths]} for every name this user has given."""
+    def resources(self, session_id):
+        """{name: [paths]} for every name given in one session (None: a draft, which has none),
+        oldest name first."""
         rows = self.db.execute(
-            "SELECT name, path FROM resources WHERE owner = ? ORDER BY name", (self.user,))
+            "SELECT name, path FROM resources WHERE session_id = ? ORDER BY created_at, rowid",
+            (session_id,))
         return {r["name"]: json.loads(r["path"]) if r["path"].startswith("[") else [r["path"]]
                 for r in rows}  # stored paths are absolute, so only a list starts with "["
 
-    def set_resource(self, name, paths):
+    def set_resource(self, session_id, name, paths):
         with self.db:
             self.db.execute(
-                """INSERT INTO resources (owner, name, path, created_at) VALUES (?, ?, ?, ?)
-                   ON CONFLICT(owner, name) DO UPDATE SET path = excluded.path""",
-                (self.user, name, json.dumps(list(paths)), _now()))
+                """INSERT INTO resources (session_id, name, path, created_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(session_id, name) DO UPDATE SET path = excluded.path""",
+                (session_id, name, json.dumps(list(paths)), _now()))
 
-    def delete_resource(self, name):
+    def delete_resource(self, session_id, name):
         with self.db:
-            return self.db.execute("DELETE FROM resources WHERE owner = ? AND name = ?",
-                                   (self.user, name)).rowcount > 0
+            return self.db.execute("DELETE FROM resources WHERE session_id = ? AND name = ?",
+                                   (session_id, name)).rowcount > 0
 
     # -- messages ---------------------------------------------------------
 

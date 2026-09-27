@@ -45,7 +45,7 @@ def ask(store, client, session, text, out=None, log=None):
         if not session.title:
             session.title, session.title_source = first_message_title(text), "auto"
         store.save(session)
-    attachments, problems = files.collect(text, store.resources())
+    attachments, problems = files.collect(text, store.resources(session.id))
     for line in problems + files.announce(attachments):
         note(line)
     store.add_message(session.id, "user", text, attachments=attachments)

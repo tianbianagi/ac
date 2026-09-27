@@ -37,7 +37,7 @@ To reach it from another device through a proxy of your own, add the name the pr
 `acc serve --allow-host acc.example.com`; the proxy must do the authenticating, since the server
 itself has no login.
 
-acc can serve more than one person, each with their own sessions, `@names` and skills; none of
+acc can serve more than one person, each with their own sessions, tags and skills; none of
 them sees the others'. Add each extra user to `config.toml` as a `[users.NAME]` table (see
 [Configuration](#configuration)). The proxy says who is asking in an `X-Acc-User: NAME` header,
 typically taken from the client certificate it checked; a request without that header, such as
@@ -89,8 +89,10 @@ it: `what does ~/notes/plan.md say about the budget?`
   saves, Esc cancels) to tag that file. A tag points at a file on the machine running
   `acc serve`, so tagging a file uploaded from your device first keeps a copy of it in
   `~/accspace/uploads/<user>` (`AC_UPLOADS_DIR` moves that); one already sent is kept as the model saw
-  it, so a PDF becomes its text. From then on `@TAG` in any message, in
-  any session or in `acc ask`, attaches every file with that tag, as it is at that moment. A
+  it, so a PDF becomes its text. A tag belongs to the session it was made in: from then on
+  `@TAG` in any message of that session (from the browser or `acc ask -S`) attaches every file
+  with that tag, as it is at that moment, and other sessions don't see it. A forked session takes
+  its tags along; a new chat keeps its tags until its first message makes the session. A
   file's tags show on its chip; tap one, then again to confirm, to untag it, and a tag with no
   files left is forgotten (the files themselves are never touched). Tags are listed at the top of
   the folder picker, where one can be queued like a file. A tag wins over a file of the same

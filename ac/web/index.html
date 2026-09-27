@@ -443,9 +443,13 @@ function markdown(src) {
 let current = null, searchTimer = null, streaming = null, quietHash = false;
 let session = null;                       // the open session, as the server last described it
 let models = [], allSkills = [];
-const draft = { model: "", skills: [] };  // choices for a new chat, until its first message
+// Choices for a new chat, until its first message; tags as {TAG: [{path, real}]}, since a
+// session keeps its own tags and this one doesn't exist yet.
+const draft = { model: "", skills: [], tags: {} };
 let pending = [];                         // files to go with the next message: {name, data, size}
 let picked = [];                          // server paths to go with it: {path, label, detail}
+let queued = 0;                            // each entry's "at": the order it was queued in, kept
+const inQueueOrder = (a, b) => a.at - b.at;  // from its chip to the sent message, so it never moves
 const chat = () => $("#chat .inner");
 
 let viewArchived = false;                  // the sidebar shows archived sessions instead
@@ -755,15 +759,17 @@ function showPending() {
     drop.addEventListener("click", () => { remove(); showPending(); if (!$("#picker").hidden) showFolder(); });
     return el("span", { class: cls }, text, tags, drop);
   };
-  $("#pending").replaceChildren(
-    ...pending.map((f, i) => chip(`${f.name} · ${size(f.size)}`, "chip", f.name, () => pending.splice(i, 1),
+  const chips = [
+    ...pending.map((f, i) => [f.at, chip(`${f.name} · ${size(f.size)}`, "chip", f.name, () => pending.splice(i, 1),
       tagsFor(null, { upload: { name: f.name, data: f.data } }, async (path) => {
         // Kept on this machine now: queue that copy in its place, so it goes as a tagged file.
         pending = pending.filter((p) => p !== f);
-        if (!(await pick(path, f.name))) { pending.push(f); showPending(); }
-      }))),
-    ...picked.map((p, i) => chip(`${p.label} · ${p.detail}`, "chip server", p.label, () => picked.splice(i, 1),
-                                 p.kind === "name" ? null : tagsFor(p.real || p.path))));
+        if (!(await pick(path, f.name, f.at))) { pending.push(f); showPending(); }
+      }))]),
+    ...picked.map((p, i) => [p.at, chip(`${p.label} · ${p.detail}`, "chip server", p.label, () => picked.splice(i, 1),
+                                        p.kind === "name" ? null : tagsFor(p.real || p.path))]),
+  ];
+  $("#pending").replaceChildren(...chips.sort(([a], [b]) => a - b).map(([, node]) => node));   // as queued
 }
 
 // -- files on the server --------------------------------------------------------------------
@@ -789,10 +795,10 @@ function pickerStatus(text, error = false) {
 // what it covers) however it was chosen: {path, label, detail, kind, real, covers}.
 const same = (p, entry) => (p.real && entry.real) ? p.real === entry.real : p.path === entry.path;
 
-async function pick(path, label) {
+async function pick(path, label, at = ++queued) {   // at: an upload's place, when it's replaced
   try {
-    const m = await api("/match?path=" + encodeURIComponent(path));
-    const entry = { path: m.path, label, detail: coverage(m), kind: m.kind, real: m.real, covers: new Set(m.covers) };
+    const m = await api("/match?path=" + encodeURIComponent(path) + "&" + namesQuery());
+    const entry = { path: m.path, label, detail: coverage(m), kind: m.kind, real: m.real, covers: new Set(m.covers), at };
     if (picked.some((p) => same(p, entry))) {
       pickerStatus(`${label} is already queued`);
       return entry;
@@ -886,7 +892,7 @@ function showFolder() {
   const q = $("#picker-filter").value.trim().toLowerCase();
   const rows = [];
   if (folder.dir === folder.home && savedNames.length && !q) {
-    rows.push(el("li", { class: "section" }, "Your names"));
+    rows.push(el("li", { class: "section" }, "This chat's tags"));
     for (const n of savedNames)
       rows.push(row({ path: "@" + n.name }, "@" + n.name, n.paths.length === 1 ? n.paths[0] : `${n.paths.length} paths`));
     rows.push(el("li", { class: "section" }, "This folder"));
@@ -903,13 +909,30 @@ function showFolder() {
 
 // -- tags ---------------------------------------------------------------------------------------
 // A file on this machine can be tagged, one file at a time, wherever its chip shows: queued or
-// already sent. @TAG in a message then attaches every file with that tag, as it is then. Tags
-// are the @names the folder picker lists; the last file untagged forgets the tag.
+// already sent. @TAG in a message of the same session then attaches every file with that tag, as
+// it is then: each session has its own tags. Tags are the @names the folder picker lists; the
+// last file untagged forgets the tag. A new chat's tags wait in draft.tags for its first message.
 
 let tagsOf = new Map();                    // where a file really is -> its tags
 
+const draftTagPaths = () => Object.fromEntries(
+  Object.entries(draft.tags).map(([tag, files]) => [tag, files.map((f) => f.path)]));
+
+// What the server needs to know which @names a lookup may use.
+const namesQuery = () => current ? "session=" + encodeURIComponent(current)
+                                 : "tags=" + encodeURIComponent(JSON.stringify(draftTagPaths()));
+
 async function loadNames() {
-  try { savedNames = (await api("/names")).names; } catch { savedNames = []; }
+  if (current) {
+    const asked = current;
+    let found = [];
+    try { found = (await api("/names?" + namesQuery())).names; } catch {}
+    if (current !== asked) return;         // another session opened meanwhile
+    savedNames = found;
+  } else {
+    savedNames = Object.entries(draft.tags).map(([name, files]) =>   // in the order they were made
+      ({ name, paths: files.map((f) => f.path), real: files.map((f) => f.real) }));
+  }
   tagsOf = new Map();
   for (const n of savedNames)
     for (const path of n.real) tagsOf.set(path, [...(tagsOf.get(path) || []), n.name]);
@@ -970,10 +993,16 @@ function askTag(span, add) {
 async function postTag(request) {
   try {
     const res = await fetch("/api/tags", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...request, session: current }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
+    if (data.portable) {                   // a new chat: the page keeps the tag until it's sent
+      const files = (draft.tags[data.tag] || []).filter((f) => f.real !== data.path);
+      if (!request.remove) files.push({ path: data.portable, real: data.path });
+      if (files.length) draft.tags[data.tag] = files; else delete draft.tags[data.tag];
+    }
     return data;
   } catch (e) {
     note(e.message, "error");
@@ -1029,7 +1058,8 @@ async function addFiles(list) {
     const total = pending.reduce((n, f) => n + f.size, 0) + file.size;
     if (total > MAX_UPLOAD) { note(`${file.name} is too large: one message takes up to ${size(MAX_UPLOAD)} of files`, "error"); continue; }
     const name = file.name || `pasted-${Date.now()}.${(file.type.split("/")[1] || "bin")}`;
-    try { pending.push({ name, size: file.size, data: await readFile(file) }); }
+    const at = ++queued;                   // its place is when it was added, not when it's read
+    try { pending.push({ name, size: file.size, data: await readFile(file), at }); }
     catch (e) { note(`can't read ${name}: ${e.message}`, "error"); }
   }
   showPending();
@@ -1193,6 +1223,7 @@ async function openSession(id) {
   document.body.classList.toggle("reading", id !== null);
   if (!id || id === "new") {
     current = null;
+    loadNames();                           // each session has its own tags; a new chat, its draft's
     showHeader(null);
     Object.assign(stats, { usage: null, speed: null, live: null });
     showStatus();
@@ -1200,6 +1231,7 @@ async function openSession(id) {
     $("#input").focus();
     return;
   }
+  loadNames();
   try {
     const { session, messages, usage } = await api("/sessions/" + encodeURIComponent(id));
     if (current !== id) return;
@@ -1311,20 +1343,22 @@ async function send(request) {
   if (!current) chat().replaceChildren();
   chat().querySelectorAll(".note").forEach((n) => { if (n.querySelector("button")) n.remove(); });
   let reply = null, failed = false, sent = false, error = null, early = null;
-  const { picked: pickedBefore, ...rest } = request;
+  const { picked: pickedBefore, files: filesBefore, ...rest } = request;
+  const queue = [...(filesBefore || []), ...(pickedBefore || [])].sort(inQueueOrder);
   if (request.text !== undefined) {
     // Shown straight away, files and all: reading them on the server can take a while.
-    early = renderMessage({ role: "user", content: request.text, status: "complete", attachments: [
-      ...(request.files || []).map((f) => ({ path: f.name, kind: "upload", note: size(f.size) })),
-      ...(pickedBefore || []).map((p) => ({ path: p.path, kind: "server", note: p.detail })),
-    ] });
+    early = renderMessage({ role: "user", content: request.text, status: "complete", attachments:
+      queue.map((q) => "data" in q ? { path: q.name, kind: "upload", note: size(q.size) }
+                                   : { path: q.path, kind: "server", note: q.detail }) });
     early.classList.add("sending");
     early.querySelector(".who").append(el("span", { class: "status" }, " · sending"));
     chat().append(early);
     scrollDown(true);
   }
   const body = { session: current, ...rest };
-  if (!current) Object.assign(body, { model: draft.model || null, skills: draft.skills });
+  if (queue.length) body.queue = queue.map((q) => "data" in q ? { upload: { name: q.name, data: q.data } }
+                                                             : { path: q.path });
+  if (!current) Object.assign(body, { model: draft.model || null, skills: draft.skills, tags: draftTagPaths() });
   try {
     const res = await fetch("/api/chat", {
       method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" },
@@ -1345,9 +1379,11 @@ async function send(request) {
         const event = JSON.parse(line);
         if (event.type === "session") {
           if (current !== event.session.id) {
+            if (!current) draft.tags = {};  // the new session has them now
             current = event.session.id;
             quietHash = true;
             location.hash = current;
+            loadNames();
           }
           showHeader(event.session);
           loadSessions();
@@ -1424,7 +1460,7 @@ function submit() {
   pending = [];
   picked = [];
   showPending();
-  send({ text, files, paths: paths.map((p) => p.path), picked: paths });
+  send({ text, files, picked: paths });
 }
 
 function grow() {
