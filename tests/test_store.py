@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ac.store import MIGRATIONS, SCHEMA, Ambiguous, Attachment, NotFound, Store
+from ac.store import MIGRATIONS, OWNER_SCHEMA, SCHEMA, Ambiguous, Attachment, NotFound, Store
 
 
 class StoreTest(unittest.TestCase):
@@ -53,7 +53,8 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.resources(), {"mom": ["/vault/mum/*.md"]})  # not per session
 
     def test_a_name_saved_before_names_could_hold_several_paths(self):
-        self.store.db.execute("INSERT INTO resources VALUES ('old', '/vault/old/*.md', '2026-01-01')")
+        self.store.db.execute("INSERT INTO resources VALUES (?, 'old', '/vault/old/*.md', "
+                              "'2026-01-01')", (self.store.user,))
         self.assertEqual(self.store.resources(), {"old": ["/vault/old/*.md"]})
 
     def test_update(self):
@@ -236,6 +237,58 @@ class StoreTest(unittest.TestCase):
             store.add_message("abcd1234", "user", "now with a file",
                               attachments=[Attachment("/x", "text", content="x")])
             self.assertEqual(len(store.messages("abcd1234")[1].attachments), 1)
+
+    def test_users_never_see_each_others_sessions_or_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ac.db"
+            mine, hers = Store(path), Store(path, user="huiwen")
+            self.addCleanup(mine.close)
+            self.addCleanup(hers.close)
+            s = mine.save(mine.draft("m1", title="mine"))
+            message = mine.add_message(s.id, "user", "secret word",
+                                       attachments=[Attachment("/x", "text", content="x")])
+            mine.set_archived(mine.save(mine.draft("m1", title="old")).id, True)
+            mine.set_resource("notes", ["/vault/mine.md"])
+            hers.set_resource("notes", ["/vault/hers.md"])
+
+            self.assertEqual(mine.get(s.id).owner, mine.user)
+            self.assertEqual((hers.list(), hers.list(search="secret"), hers.latest()),
+                             ([], [], None))
+            self.assertEqual(hers.archived_count(), 0)
+            for ref in (s.id, s.id[:3], "mine"):
+                with self.assertRaises(NotFound):
+                    hers.get(ref)
+            with self.assertRaises(NotFound):
+                hers.attachment(message.attachments[0].id)
+            with self.assertRaises(NotFound):
+                hers.save(mine.get(s.id))       # not by overwriting it with the same id either
+            hers.delete(s.id)
+            hers.set_archived(s.id, True)
+            self.assertIsNone(mine.get(s.id).archived_at)
+            self.assertEqual(mine.resources(), {"notes": ["/vault/mine.md"]})
+            self.assertEqual(hers.resources(), {"notes": ["/vault/hers.md"]})
+            hers.delete_resource("notes")
+            self.assertEqual(mine.resources(), {"notes": ["/vault/mine.md"]})
+
+    def test_what_was_there_before_users_is_the_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ac.db"
+            old = sqlite3.connect(path)
+            for step in MIGRATIONS[:MIGRATIONS.index(OWNER_SCHEMA)]:
+                old.executescript(step)
+            old.execute("INSERT INTO sessions (id, model, created_at, updated_at) "
+                        "VALUES ('abcd1234', 'm1', '2026-01-01', '2026-01-01')")
+            old.execute("INSERT INTO resources VALUES ('notes', '[\"/vault/a.md\"]', '2026-01-01')")
+            old.execute(f"PRAGMA user_version = {MIGRATIONS.index(OWNER_SCHEMA)}")
+            old.commit()
+            old.close()
+            store = Store(path)
+            self.addCleanup(store.close)
+            self.assertEqual(store.get("abcd1234").owner, store.user)
+            self.assertEqual(store.resources(), {"notes": ["/vault/a.md"]})
+            hers = Store(path, user="huiwen")
+            self.addCleanup(hers.close)
+            self.assertEqual((hers.list(), hers.resources()), ([], {}))
 
     def test_persists_across_connections(self):
         with tempfile.TemporaryDirectory() as tmp:

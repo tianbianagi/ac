@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
+
 SCHEMA = """
 CREATE TABLE sessions (
     id            TEXT PRIMARY KEY,
@@ -87,8 +89,26 @@ CREATE TABLE resources (
 # When a session was archived: out of the lists, kept whole, and back with a new message.
 ARCHIVED_SCHEMA = "ALTER TABLE sessions ADD COLUMN archived_at TEXT;"
 
+# Whose each session and name is: acc can serve several people, who never see each other's.
+# What was there before belongs to the owner (filled in by _backfill_owner).
+OWNER_SCHEMA = """
+ALTER TABLE sessions ADD COLUMN owner TEXT NOT NULL DEFAULT '';
+CREATE INDEX sessions_owner ON sessions(owner, updated_at);
+CREATE TABLE owned_resources (
+    owner      TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (owner, name)
+);
+INSERT INTO owned_resources SELECT '', name, path, created_at FROM resources;
+DROP TABLE resources;
+ALTER TABLE owned_resources RENAME TO resources;
+"""
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
-MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA, ARCHIVED_SCHEMA]
+MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA, ARCHIVED_SCHEMA,
+              OWNER_SCHEMA]
 
 
 class StoreError(Exception):
@@ -107,6 +127,7 @@ class Ambiguous(StoreError):
 class Session:
     id: str
     model: str
+    owner: str | None = None
     title: str | None = None
     title_source: str | None = None
     system: str | None = None
@@ -171,7 +192,11 @@ def _fts_query(text):
 
 
 class Store:
-    def __init__(self, path):
+    """One user's view of the database: their sessions and names, never anyone else's.
+    The owner's unless another user is given."""
+
+    def __init__(self, path, user=None):
+        self.user = user or config.owner()
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path))
@@ -199,6 +224,8 @@ class Store:
                     pass  # SQLite built without FTS5: search falls back to LIKE
             if MIGRATIONS[step] is TITLE_SOURCE_SCHEMA:
                 self._backfill_title_source()
+            if MIGRATIONS[step] is OWNER_SCHEMA:
+                self._backfill_owner()
             self.db.execute(f"PRAGMA user_version = {step + 1}")
             self.db.commit()
 
@@ -214,11 +241,17 @@ class Store:
             self.db.execute("UPDATE sessions SET title_source = ? WHERE id = ?",
                             ("auto" if automatic else "user", row["id"]))
 
+    def _backfill_owner(self):
+        """Everything from before acc knew about users is the owner's."""
+        for table in ("sessions", "resources"):
+            self.db.execute(f"UPDATE {table} SET owner = ? WHERE owner = ''", (config.owner(),))
+
     # -- sessions ---------------------------------------------------------
 
     def draft(self, model, *, title=None, system=None, options=None, skills=()):
         """A new session that is not written until save(), so abandoned launches leave nothing."""
-        return Session(id=secrets.token_hex(4), model=model, title=title, system=system,
+        return Session(id=secrets.token_hex(4), model=model, owner=self.user, title=title,
+                       system=system,
                        title_source="user" if title else None,
                        options=dict(options or {}), skills=list(skills))
 
@@ -227,17 +260,20 @@ class Store:
         session.created_at = session.created_at or now
         session.updated_at = now
         with self.db:
-            self.db.execute(
-                """INSERT INTO sessions (id, title, title_source, model, system, options,
+            saved = self.db.execute(
+                """INSERT INTO sessions (id, owner, title, title_source, model, system, options,
                                          parent_id, forked_at_seq, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        title = excluded.title, title_source = excluded.title_source,
                        model = excluded.model, system = excluded.system,
-                       options = excluded.options, updated_at = excluded.updated_at""",
-                (session.id, session.title, session.title_source, session.model, session.system,
-                 json.dumps(session.options), session.parent_id, session.forked_at_seq,
-                 session.created_at, session.updated_at))
+                       options = excluded.options, updated_at = excluded.updated_at
+                   WHERE sessions.owner = excluded.owner""",
+                (session.id, self.user, session.title, session.title_source, session.model,
+                 session.system, json.dumps(session.options), session.parent_id,
+                 session.forked_at_seq, session.created_at, session.updated_at)).rowcount
+            if not saved:
+                raise NotFound(f"no session matches '{session.id}'")
             self.db.execute("DELETE FROM session_skills WHERE session_id = ?", (session.id,))
             self.db.executemany(
                 "INSERT INTO session_skills (session_id, ref, position) VALUES (?, ?, ?)",
@@ -250,7 +286,7 @@ class Store:
             "SELECT ref FROM session_skills WHERE session_id = ? ORDER BY position", (row["id"],))]
         keys = row.keys()
         return Session(
-            id=row["id"], model=row["model"], title=row["title"],
+            id=row["id"], model=row["model"], owner=row["owner"], title=row["title"],
             title_source=row["title_source"], system=row["system"],
             options=json.loads(row["options"]), skills=skills, parent_id=row["parent_id"],
             forked_at_seq=row["forked_at_seq"], created_at=row["created_at"],
@@ -266,10 +302,12 @@ class Store:
         if not ref:
             raise NotFound("no session given")
         rows = self.db.execute(
-            self._SELECT + " WHERE substr(s.id, 1, ?) = ?", (len(ref), ref.lower())).fetchall()
+            self._SELECT + " WHERE s.owner = ? AND substr(s.id, 1, ?) = ?",
+            (self.user, len(ref), ref.lower())).fetchall()
         if not rows:
             rows = self.db.execute(
-                self._SELECT + " WHERE s.title = ? COLLATE NOCASE", (ref,)).fetchall()
+                self._SELECT + " WHERE s.owner = ? AND s.title = ? COLLATE NOCASE",
+                (self.user, ref)).fetchall()
         if not rows:
             raise NotFound(f"no session matches '{ref}'")
         if len(rows) > 1:
@@ -280,42 +318,44 @@ class Store:
     def latest(self):
         """The session most recently changed, leaving archived ones out."""
         row = self.db.execute(
-            self._SELECT + " WHERE s.archived_at IS NULL"
-            " ORDER BY s.updated_at DESC, s.rowid DESC LIMIT 1").fetchone()
+            self._SELECT + " WHERE s.owner = ? AND s.archived_at IS NULL"
+            " ORDER BY s.updated_at DESC, s.rowid DESC LIMIT 1", (self.user,)).fetchone()
         return self._session(row) if row else None
 
     def list(self, search=None, archived=False):
         """Sessions, most recent first: those not archived, or with archived=True only those
         that are. A search matches titles and message text."""
-        sql = self._SELECT + (" WHERE s.archived_at IS NOT NULL" if archived
-                              else " WHERE s.archived_at IS NULL")
-        params = []
+        sql = self._SELECT + (" WHERE s.owner = ? AND s.archived_at IS NOT NULL" if archived
+                              else " WHERE s.owner = ? AND s.archived_at IS NULL")
+        params = [self.user]
         if search:
             if self.fts:
                 sql += """ AND (s.title LIKE ? OR s.id IN (
                                SELECT m.session_id FROM messages_fts f
                                JOIN messages m ON m.id = f.rowid WHERE messages_fts MATCH ?))"""
-                params = [f"%{search}%", _fts_query(search)]
+                params += [f"%{search}%", _fts_query(search)]
             else:
                 sql += """ AND (s.title LIKE ? OR s.id IN (
                                SELECT session_id FROM messages WHERE content LIKE ?))"""
-                params = [f"%{search}%", f"%{search}%"]
+                params += [f"%{search}%", f"%{search}%"]
         sql += " ORDER BY s.updated_at DESC, s.rowid DESC"
         return [self._session(r) for r in self.db.execute(sql, params)]
 
     def archived_count(self):
         return self.db.execute(
-            "SELECT COUNT(*) FROM sessions WHERE archived_at IS NOT NULL").fetchone()[0]
+            "SELECT COUNT(*) FROM sessions WHERE owner = ? AND archived_at IS NOT NULL",
+            (self.user,)).fetchone()[0]
 
     def set_archived(self, session_id, archived):
         """Archive a session or bring it back. Its place in the list (updated_at) is kept."""
         with self.db:
-            self.db.execute("UPDATE sessions SET archived_at = ? WHERE id = ?",
-                            (_now() if archived else None, session_id))
+            self.db.execute("UPDATE sessions SET archived_at = ? WHERE id = ? AND owner = ?",
+                            (_now() if archived else None, session_id, self.user))
 
     def delete(self, session_id):
         with self.db:
-            self.db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self.db.execute("DELETE FROM sessions WHERE id = ? AND owner = ?",
+                            (session_id, self.user))
 
     def fork(self, session_id, at_seq=None, title=None):
         """Copy a session, and its messages up to at_seq (all of them by default), into a new one."""
@@ -351,21 +391,23 @@ class Store:
     # -- named paths ------------------------------------------------------
 
     def resources(self):
-        """{name: [paths]} for every name."""
-        rows = self.db.execute("SELECT name, path FROM resources ORDER BY name")
+        """{name: [paths]} for every name this user has given."""
+        rows = self.db.execute(
+            "SELECT name, path FROM resources WHERE owner = ? ORDER BY name", (self.user,))
         return {r["name"]: json.loads(r["path"]) if r["path"].startswith("[") else [r["path"]]
                 for r in rows}  # stored paths are absolute, so only a list starts with "["
 
     def set_resource(self, name, paths):
         with self.db:
             self.db.execute(
-                """INSERT INTO resources (name, path, created_at) VALUES (?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET path = excluded.path""",
-                (name, json.dumps(list(paths)), _now()))
+                """INSERT INTO resources (owner, name, path, created_at) VALUES (?, ?, ?, ?)
+                   ON CONFLICT(owner, name) DO UPDATE SET path = excluded.path""",
+                (self.user, name, json.dumps(list(paths)), _now()))
 
     def delete_resource(self, name):
         with self.db:
-            return self.db.execute("DELETE FROM resources WHERE name = ?", (name,)).rowcount > 0
+            return self.db.execute("DELETE FROM resources WHERE owner = ? AND name = ?",
+                                   (self.user, name)).rowcount > 0
 
     # -- messages ---------------------------------------------------------
 
@@ -411,7 +453,11 @@ class Store:
                 for r in rows]
 
     def attachment(self, attachment_id):
-        row = self.db.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
+        """A file attached in one of this user's sessions."""
+        row = self.db.execute(
+            """SELECT a.* FROM attachments a JOIN messages m ON m.id = a.message_id
+               JOIN sessions s ON s.id = m.session_id WHERE a.id = ? AND s.owner = ?""",
+            (attachment_id, self.user)).fetchone()
         if row is None:
             raise NotFound(f"no attachment {attachment_id}")
         return Attachment(path=row["path"], kind=row["kind"], content=row["content"],

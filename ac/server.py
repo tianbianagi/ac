@@ -4,6 +4,10 @@ It listens on 127.0.0.1 only and answers only requests addressed to it by that n
 name passed with --allow-host, for a proxy in front of it), since it can read every session and
 the files a message names. Each request opens its own connection
 to the database, so the server can answer several at once.
+
+It serves the users config.toml names, each with their own sessions, @names and skills. The
+proxy says who is asking in the X-Acc-User header, from the client certificate it checked; a
+request without one (as from a browser on this machine) is the owner's.
 """
 
 import base64
@@ -28,6 +32,7 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_BODY = 64 << 20     # a message with its uploads, base64 and all
+USER_HEADER = "X-Acc-User"
 IMAGE_TYPES = [(b"\x89PNG", "image/png"), (b"\xff\xd8", "image/jpeg"), (b"GIF8", "image/gif"),
                (b"RIFF", "image/webp")]
 
@@ -177,10 +182,10 @@ def match(word, names):
             "covers": [os.path.realpath(p) for p in paths[:MAX_COVERS]]}
 
 
-def keep_upload(name, data):
-    """Save an uploaded file's bytes into the uploads folder under its own name, or beside a
-    different file of that name as "name 2.ext"; the same bytes again reuse the first copy."""
-    folder = config.uploads_dir()
+def keep_upload(name, data, user=None):
+    """Save an uploaded file's bytes into the user's uploads folder under its own name, or beside
+    a different file of that name as "name 2.ext"; the same bytes again reuse the first copy."""
+    folder = config.uploads_dir(user)
     folder.mkdir(parents=True, exist_ok=True)
     name = Path(name).name or "upload"
     stem, suffix = Path(name).stem, Path(name).suffix
@@ -205,7 +210,7 @@ def tagged_path(store, request):
             data = base64.b64decode(str(upload.get("data") or ""), validate=True)
         except (binascii.Error, ValueError):
             raise BadRequest("the file didn't arrive intact") from None
-        return str(keep_upload(str(upload.get("name") or ""), data))
+        return str(keep_upload(str(upload.get("name") or ""), data, store.user))
     if "attachment" in request:
         try:
             a = store.attachment(int(request["attachment"]))
@@ -219,7 +224,7 @@ def tagged_path(store, request):
             data, name = (a.content or "").encode(), a.path
             if name.lower().endswith(".pdf"):
                 name += ".txt"              # a PDF's text is not a PDF
-        path = str(keep_upload(name, data))
+        path = str(keep_upload(name, data, store.user))
         store.move_attachment(a.id, path)
         return path
     return str(request.get("path") or "").strip()
@@ -265,7 +270,8 @@ def update_session(store, client, session, request):
         if not isinstance(request["skills"], list):
             raise BadRequest("skills must be a list")
         try:
-            session.skills = list(dict.fromkeys(skills.normalize_ref(str(r))
+            dirs = config.skills_dirs(store.user)
+            session.skills = list(dict.fromkeys(skills.normalize_ref(str(r), dirs)
                                                 for r in request["skills"]))
         except skills.SkillError as e:
             raise BadRequest(str(e)) from None
@@ -320,7 +326,8 @@ def chat(store, client, request):
         sent = store.add_message(session.id, "user", text, attachments=attachments)
         yield {"type": "message", "message": message_json(sent)}
 
-    system, active, missing = skills.compose_system(session.system, session.skills)
+    system, active, missing = skills.compose_system(session.system, session.skills,
+                                                    config.skills_dirs(store.user))
     for ref in missing:
         yield {"type": "note", "text": f"skill '{skills.label(ref)}' can't be loaded; "
                                        "continuing without it"}
@@ -408,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
     def do_GET(self):
-        if not self._host_ok():
+        if not self._host_ok() or self._user() is None:
             return self._error(403, "forbidden")
         url = urlsplit(self.path)
         path = url.path
@@ -418,7 +425,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._static("index.html" if path == "/" else path[len("/static/"):])
         if not path.startswith("/api/"):
             return self._error(404, "not found")
-        store = Store(self.db_path)
+        store = self._store()
         try:
             return self._api(store, path[len("/api"):], parse_qs(url.query))
         except (NotFound, Ambiguous) as e:
@@ -427,7 +434,7 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
 
     def do_POST(self):
-        if not self._host_ok() or not self._same_origin():
+        if not self._host_ok() or not self._same_origin() or self._user() is None:
             return self._error(403, "forbidden")
         if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
             return self._error(415, "send JSON")
@@ -444,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(request, dict):
             return self._error(400, "bad JSON")
         path = urlsplit(self.path).path
-        store = Store(self.db_path)
+        store = self._store()
         try:
             if path == "/api/chat":
                 return self._chat(store, request)
@@ -463,7 +470,7 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
 
     def do_DELETE(self):
-        if not self._host_ok() or not self._same_origin():
+        if not self._host_ok() or not self._same_origin() or self._user() is None:
             return self._error(403, "forbidden")
         path = urlsplit(self.path).path
         if path.startswith("/api/attachments/"):
@@ -473,7 +480,7 @@ class Handler(BaseHTTPRequestHandler):
         ref, _, rest = path[len("/api/sessions/"):].partition("/messages/")
         if rest:
             return self._delete_message(unquote(ref), rest)
-        store = Store(self.db_path)
+        store = self._store()
         try:
             session = store.get(unquote(path[len("/api/sessions/"):]))
             store.delete(session.id)
@@ -485,7 +492,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _delete_message(self, ref, seq):
         """Take one message out of a conversation, with the files that came with it."""
-        store = Store(self.db_path)
+        store = self._store()
         try:
             session = store.get(ref)
             store.delete_message(session.id, int(seq))
@@ -500,7 +507,7 @@ class Handler(BaseHTTPRequestHandler):
     def _delete_attachment(self, ref):
         """Take one file out of a conversation: the message it came
         with stays, the file on disk is never touched, and the model doesn't see it again."""
-        store = Store(self.db_path)
+        store = self._store()
         try:
             try:
                 attachment = store.attachment(int(ref))
@@ -584,7 +591,7 @@ class Handler(BaseHTTPRequestHandler):
                                "messages": [message_json(m) for m in messages],
                                "usage": usage(self.client, session, messages)})
         if path == "/config":
-            return self._json({"names": config.speaker_names()})
+            return self._json({"names": config.speaker_names(store.user), "user": store.user})
         if path == "/models":
             try:
                 models = self.client.list_models()
@@ -604,8 +611,9 @@ class Handler(BaseHTTPRequestHandler):
                  "real": [os.path.realpath(p) for p in paths]}
                 for name, paths in store.resources().items()]})
         if path == "/skills":
+            found = skills.discover(config.skills_dirs(store.user))
             return self._json({"skills": [{"name": s.name, "description": s.description}
-                                          for _, s in sorted(skills.discover().items())]})
+                                          for _, s in sorted(found.items())]})
         if path.startswith("/attachments/"):
             try:
                 a = store.attachment(int(path[len("/attachments/"):]))
@@ -624,6 +632,18 @@ class Handler(BaseHTTPRequestHandler):
         passes its own name, which --allow-host adds."""
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].lower()
         return host in ("127.0.0.1", "localhost", *self.allowed_hosts)
+
+    def _user(self):
+        """Who is asking: the user the proxy named, or the owner when it named no one. None
+        for a name config.toml doesn't know."""
+        name = (self.headers.get(USER_HEADER) or "").strip().lower()
+        known = config.users()
+        if not name:
+            return known[0]
+        return name if name in known else None
+
+    def _store(self):
+        return Store(self.db_path, self._user())
 
     def _same_origin(self):
         """A change must come from this server's own page, not from a form on another site."""

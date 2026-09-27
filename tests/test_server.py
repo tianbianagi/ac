@@ -47,10 +47,11 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 
-    def get(self, path, host=None):
+    def get(self, path, host=None, headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port)
         self.addCleanup(conn.close)
-        conn.request("GET", path, headers={"Host": host or f"127.0.0.1:{self.port}"})
+        conn.request("GET", path, headers={"Host": host or f"127.0.0.1:{self.port}",
+                                           **(headers or {})})
         res = conn.getresponse()
         body = res.read()
         if res.getheader("Content-Type") == "application/json":
@@ -114,6 +115,50 @@ class ServerTest(unittest.TestCase):
         (config_dir / "config.toml").write_text('user_name = "Sam"\n')
         _, body = self.get("/api/config")
         self.assertEqual(body["names"], {"user": "Sam", "assistant": "Assistant"})
+
+    def test_each_user_has_their_own_sessions_names_and_skills(self):
+        config_dir = Path(os.environ["AC_CONFIG_DIR"])
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text(
+            'user_name = "Sam"\n[users.huiwen]\nassistant_name = "Codi"\n')
+        write_skill(config_dir / "skills", "shared")
+        write_skill(config_dir / "users" / "huiwen" / "skills", "hers", body="Hers only.")
+        self.store.set_resource("notes", ["/tmp/notes.md"])
+        her = {"X-Acc-User": "Huiwen"}
+
+        _, body = self.get("/api/sessions", headers=her)
+        self.assertEqual((body["sessions"], body["archived_count"]), ([], 0))
+        self.assertEqual(self.get(f"/api/sessions/{self.lisbon.id}", headers=her)[0], 404)
+        self.assertEqual(self.post(f"/api/sessions/{self.lisbon.id}", {"title": "x"}, her)[0], 404)
+        self.assertEqual(self.delete(f"/api/sessions/{self.lisbon.id}", her)[0], 404)
+        self.assertEqual(self.delete("/api/attachments/1", her)[0], 404)
+        self.assertEqual(self.get("/api/names", headers=her)[1], {"names": []})
+        self.assertEqual(self.get("/api/config", headers=her)[1],
+                         {"names": {"user": "Huiwen", "assistant": "Codi"}, "user": "huiwen"})
+        self.assertEqual([s["name"] for s in self.get("/api/skills", headers=her)[1]["skills"]],
+                         ["hers", "shared"])
+        self.assertEqual([s["name"] for s in self.get("/api/skills")[1]["skills"]], ["shared"])
+
+        self.fake.reply("Hi Huiwen")
+        status, events = self.post("/api/chat", {"text": "Hello", "model": "m1",
+                                                 "skills": ["hers"]}, her)
+        self.assertEqual(status, 200)
+        mine = self.store.list()
+        self.assertEqual([s.title for s in mine], ["Soup", "Trip to Lisbon"])
+        self.assertIn("Hers only.", self.fake.requests[-1]["messages"][0]["content"])
+        (hers,) = self.get("/api/sessions", headers=her)[1]["sessions"]
+        self.assertEqual(hers["title"], "Hello")
+        self.assertEqual(self.get(f"/api/sessions/{hers['id']}")[0], 404)   # nor she mine
+        self.assertEqual(self.post("/api/chat", {"text": "Hi", "skills": ["hers"]})[0], 400)
+        self.assertEqual(self.get("/api/config")[1]["names"]["user"], "Sam")
+
+    def test_a_user_config_does_not_know_is_turned_away(self):
+        stranger = {"X-Acc-User": "mallory"}
+        self.assertEqual(self.get("/api/sessions", headers=stranger)[0], 403)
+        self.assertEqual(self.get("/", headers=stranger)[0], 403)
+        self.assertEqual(self.post("/api/chat", {"text": "hi"}, stranger)[0], 403)
+        self.assertEqual(self.delete(f"/api/sessions/{self.soup.id}", stranger)[0], 403)
+        self.assertEqual(self.get("/api/sessions", headers={"X-Acc-User": ""})[0], 200)  # owner
 
     def test_serves_the_page(self):
         status, body = self.get("/")
@@ -462,7 +507,7 @@ class ServerTest(unittest.TestCase):
         self.assertTrue((root / "notes.md").exists())
 
     def test_uploads_are_kept_when_tagged(self):
-        uploads = Path(os.environ["AC_UPLOADS_DIR"])
+        uploads = Path(os.environ["AC_UPLOADS_DIR"]) / self.store.user     # each user their own
         data = base64.b64encode(b"ship on friday").decode()
         status, body = self.post("/api/tags", {"upload": {"name": "../plan.md", "data": data}, "tag": "plan"})
         kept = uploads / "plan.md"                  # its own name, never a path

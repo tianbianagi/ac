@@ -1,6 +1,8 @@
 """Paths, environment variables and defaults."""
 
+import getpass
 import os
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -31,10 +33,13 @@ def config_dir():
     return Path.home() / "accspace" / "config"
 
 
-def skills_dirs():
-    """Skill search path: AC_SKILLS_PATH entries first, then the user library."""
+def skills_dirs(user=None):
+    """Skill search path: AC_SKILLS_PATH entries first, then the user's own library
+    (users/<user>/skills, when a user is given), then the library everyone shares."""
     extra = os.environ.get("AC_SKILLS_PATH", "")
     dirs = [Path(p).expanduser() for p in extra.split(os.pathsep) if p]
+    if user:
+        dirs.append(config_dir() / "users" / user / "skills")
     dirs.append(config_dir() / "skills")
     return dirs
 
@@ -55,26 +60,55 @@ def settings():
         return {}
 
 
-def uploads_dir():
+USER_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+
+def owner():
+    """The user who runs acc: the one the terminal commands, and a browser on this machine,
+    act as. Known by their login name."""
+    return getpass.getuser().lower()
+
+
+def users():
+    """Everyone acc serves: the owner, then each [users.NAME] table in config.toml."""
+    extra = settings().get("users")
+    names = [owner()] + [str(n).lower() for n in (extra if isinstance(extra, dict) else {})]
+    return [n for n in dict.fromkeys(names) if USER_NAME.fullmatch(n)]
+
+
+def user_settings(user=None):
+    """Settings as they apply to one user: config.toml, with that user's [users.NAME] table
+    over it. Anyone but the owner is called by their own name rather than the owner's."""
+    chosen = {k: v for k, v in settings().items() if k != "users"}
+    if user and user != owner():
+        chosen["user_name"] = user.capitalize()
+        own = (settings().get("users") or {}).get(user)
+        chosen.update(own if isinstance(own, dict) else {})
+    return chosen
+
+
+def uploads_dir(user=None):
     """Where a file uploaded from the browser is kept once it is tagged: $AC_UPLOADS_DIR, else
-    ~/accspace/uploads. A tag needs a file on this machine to point at."""
+    ~/accspace/uploads, in a folder of the user's own. A tag needs a file on this machine to
+    point at."""
     override = os.environ.get("AC_UPLOADS_DIR")
-    return Path(override).expanduser() if override else Path.home() / "accspace" / "uploads"
+    base = Path(override).expanduser() if override else Path.home() / "accspace" / "uploads"
+    return base / user if user else base
 
 
-def export_dir():
+def export_dir(user=None):
     """Where exports go when no file is named: $AC_EXPORT_DIR, then export_dir in config.toml.
 
     None means the current directory.
     """
-    raw = os.environ.get("AC_EXPORT_DIR") or settings().get("export_dir")
+    raw = os.environ.get("AC_EXPORT_DIR") or user_settings(user).get("export_dir")
     return Path(str(raw)).expanduser() if raw else None
 
 
-def speaker_names():
+def speaker_names(user=None):
     """What exports call each side of the conversation: user_name and assistant_name in
     config.toml. Display only: the model is never told these names."""
-    chosen = settings()
+    chosen = user_settings(user)
     return {"user": str(chosen.get("user_name") or "User"),
             "assistant": str(chosen.get("assistant_name") or "Assistant")}
 

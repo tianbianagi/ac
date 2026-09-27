@@ -37,6 +37,15 @@ To reach it from another device through a proxy of your own, add the name the pr
 `acc serve --allow-host acc.example.com`; the proxy must do the authenticating, since the server
 itself has no login.
 
+acc can serve more than one person, each with their own sessions, `@names` and skills; none of
+them sees the others'. Add each extra user to `config.toml` as a `[users.NAME]` table (see
+[Configuration](#configuration)). The proxy says who is asking in an `X-Acc-User: NAME` header,
+typically taken from the client certificate it checked; a request without that header, such as
+from a browser on this machine, is yours (the owner, known by your login name), and one naming a
+user `config.toml` doesn't list is turned away. The terminal commands always act as the owner.
+Everyone can read the same files on this machine: users keep their conversations apart, not
+their files.
+
 The other commands work on the same sessions from the terminal:
 
 ```sh
@@ -79,7 +88,7 @@ it: `what does ~/notes/plan.md say about the budget?`
 - **Tags.** Every file chip, queued or already sent, has a `#`: tap it and type a tag (Enter
   saves, Esc cancels) to tag that file. A tag points at a file on the machine running
   `acc serve`, so tagging a file uploaded from your device first keeps a copy of it in
-  `~/accspace/uploads` (`AC_UPLOADS_DIR` moves that); one already sent is kept as the model saw
+  `~/accspace/uploads/<user>` (`AC_UPLOADS_DIR` moves that); one already sent is kept as the model saw
   it, so a PDF becomes its text. From then on `@TAG` in any message, in
   any session or in `acc ask`, attaches every file with that tag, as it is at that moment. A
   file's tags show on its chip; tap one, then again to confirm, to untag it, and a tag with no
@@ -111,7 +120,8 @@ Answer in as few words as the question allows. ...
 ```
 
 Put skills in `~/accspace/config/skills/<name>/SKILL.md` (see `examples/skills/`), or add directories
-with `AC_SKILLS_PATH`. Attach them from **Skills** in the browser, or with `acc set ID --add-skill`
+with `AC_SKILLS_PATH`. Skills there are everyone's; one user's own go in
+`~/accspace/config/users/<user>/skills/<name>/SKILL.md`, and win over a shared skill of that name. Attach them from **Skills** in the browser, or with `acc set ID --add-skill`
 and `acc ask -s`, by name or by path to any markdown file: `acc ask -s ./notes/style.md "..."`.
 
 - Skills are **instructions only**. Nothing is executed and the model gets no tools.
@@ -148,6 +158,11 @@ max_attach_kb = 400
 # What exports call the two sides of the conversation (default "User" and "Assistant").
 user_name = "Sam"
 assistant_name = "Robin"
+
+# Someone else acc serves (see Use). Their table can set any of the settings above for them;
+# they are called by their own name ("Alex") unless it sets user_name.
+[users.alex]
+assistant_name = "Robin"
 ```
 
 Exports are named `DATE TITLE.md`, for example `2026-09-20 Planning a Trip to Lisbon.md`. The
@@ -169,7 +184,7 @@ are dropped, and if another session already owns the name, the session id is app
 | --- | --- | --- |
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
-| `AC_UPLOADS_DIR` | where uploads are kept once tagged | `~/accspace/uploads` |
+| `AC_UPLOADS_DIR` | where uploads are kept once tagged, in a folder per user | `~/accspace/uploads` |
 | `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
 | `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |

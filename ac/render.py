@@ -108,7 +108,7 @@ def export_path(session):
     session already owns that name, this one's id is added rather than overwriting it.
     """
     day = datetime.fromisoformat(session.created_at).astimezone().date().isoformat()
-    folder = config.export_dir() or Path.cwd()
+    folder = config.export_dir(session.owner) or Path.cwd()
     name = safe_filename(session.title) or f"ac-{session.id}"
     path = folder / f"{day} {name}.md"
     if path.exists() and not _is_export_of(path, session):
@@ -127,7 +127,7 @@ def to_markdown(session, messages, thinking=False):
              f"- skills: {skills_label(session.skills)}", f"- created: {session.created_at}"]
     if session.system:
         lines += ["", "## System", "", session.system]
-    names = config.speaker_names()
+    names = config.speaker_names(session.owner)
     for m in messages:
         lines += ["", f"## {names.get(m.role, m.role.capitalize())}" + ("" if m.status == "complete"
                                                      else f" ({m.status})"), ""]
