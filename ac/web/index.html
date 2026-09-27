@@ -969,7 +969,7 @@ function showPending() {
 
 // -- files on the server --------------------------------------------------------------------
 
-let folder = null;                         // what the picker shows: the /api/browse answer
+let folder = null;                         // what the picker shows: the /api/browse answer, until a reload
 let savedNames = [];
 
 function remembered(key, value) {
@@ -1023,14 +1023,13 @@ function coveredBy(entry) {
 async function openFolder(dir) {
   try {
     folder = await api("/browse" + (dir ? "?dir=" + encodeURIComponent(dir) : ""));
-    remembered("acc.folder", folder.dir);
     showLines();
     $("#picker-filter").value = "";
     pickerStatus("");
     showFolder();
     $("#picker-list").scrollTop = 0;
   } catch (e) {
-    if (dir) return openFolder(null);       // a remembered folder that has gone: start at home
+    if (dir) return openFolder(null);       // a folder that has gone: back to the start folder
     pickerStatus(e.message, true);
   }
 }
@@ -1231,7 +1230,7 @@ async function openPicker() {
   $("#picker").hidden = false;
   editingPaths = false;                    // an edit left unapplied last time is let go
   await loadNames();
-  if (!folder) await openFolder(remembered("acc.folder"));
+  if (!folder) await openFolder(null);     // the start folder; after that, wherever it was left
   else showFolder();
   $("#picker-filter").focus();
 }

@@ -494,6 +494,16 @@ class ServerTest(unittest.TestCase):
         _, body = self.get("/api/browse")
         self.assertEqual(body["dir"], str(Path.home().resolve()))
         self.assertEqual(self.get(f"/api/browse?dir={root}/notes.md")[0], 404)
+        # Unnamed, it opens at each user's start_dir; one that has gone falls back to home.
+        config_dir = Path(os.environ["AC_CONFIG_DIR"])
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text(
+            f'start_dir = "{root}"\n[users.hagi]\nstart_dir = "{root}/src"\n')
+        self.assertEqual(self.get("/api/browse")[1]["dir"], str(root))
+        self.assertEqual(self.get("/api/browse", headers={"X-Acc-User": "hagi"})[1]["dir"],
+                         str(root / "src"))
+        (config_dir / "config.toml").write_text(f'start_dir = "{root}/gone"\n')
+        self.assertEqual(self.get("/api/browse")[1]["dir"], str(Path.home().resolve()))
         # A folder reached through a symlink keeps the name it was reached by.
         link = root.parent / "shortcut"
         link.symlink_to(root)

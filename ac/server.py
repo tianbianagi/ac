@@ -168,11 +168,15 @@ def read_queue(read, names):
     return attachments, notes
 
 
-def browse(folder):
+def browse(folder, user=None):
     """What a folder on this machine holds, for the page's picker: folders first, then files,
     leaving out hidden, ignored and dependency files. Paths stay as they were reached, so a folder entered
-    through a symlink (~/accspace) keeps that name rather than where the link points."""
-    path = Path(os.path.abspath(Path(folder or "~").expanduser()))
+    through a symlink (~/accspace) keeps that name rather than where the link points. With no
+    folder named it opens at the user's start_dir, or home if that isn't a folder."""
+    if not folder:
+        start = config.start_dir(user)
+        folder = str(start) if start and start.is_dir() else "~"
+    path = Path(os.path.abspath(Path(folder).expanduser()))
     if not path.is_dir():
         raise NotFound(f"{folder} isn't a folder here")
     entries = []
@@ -736,7 +740,7 @@ class Handler(BaseHTTPRequestHandler):
                  "parameter_size": (m.get("details") or {}).get("parameter_size")}
                 for m in models]})
         if path == "/browse":
-            return self._json(browse((query.get("dir") or [""])[0]))
+            return self._json(browse((query.get("dir") or [""])[0], store.user))
         if path == "/match":
             return self._json(match((query.get("path") or [""])[0], self._names(store, query)))
         if path == "/names":

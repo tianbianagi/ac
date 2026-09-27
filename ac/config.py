@@ -106,6 +106,13 @@ def uploads_dir(user=None):
     return base / user if user else base
 
 
+def start_dir(user=None):
+    """Where the page's server picker opens before it remembers a folder: start_dir in
+    config.toml. None means home."""
+    raw = user_settings(user).get("start_dir")
+    return Path(str(raw)).expanduser() if raw else None
+
+
 def speaker_names(user=None):
     """What exports call each side of the conversation: user_name and assistant_name in
     config.toml. Display only: the model is never told these names."""

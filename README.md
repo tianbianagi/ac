@@ -162,6 +162,10 @@ Personal settings live in `~/accspace/config/config.toml` (optional):
 # How much text a pattern such as src/** may attach to one message, in KB (default 400).
 max_attach_kb = 400
 
+# Where the browser's From the server picker opens (default home). Until the page is
+# reloaded it reopens wherever you left it.
+start_dir = "~/Documents"
+
 # What exports call the two sides of the conversation (default "User" and "Assistant").
 user_name = "Sam"
 assistant_name = "Robin"
