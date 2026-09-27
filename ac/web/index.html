@@ -165,6 +165,14 @@ select.btn { padding-right: 8px; max-width: 100%; }
                         justify-content: center; color: var(--muted); flex: none; }
 #composer .btn.attach:hover { color: var(--accent); }
 #composer .btn.attach svg { width: 20px; height: 20px; }
+/* One button for attaching, with its two sources in a menu that opens upward from it. */
+.add-files { position: relative; flex: none; }
+#add-menu { top: auto; bottom: 100%; margin: 0 0 6px; min-width: 250px; }
+#add-menu button { display: flex; gap: 10px; align-items: flex-start; width: 100%; padding: 8px; border: 0;
+                   border-radius: 6px; background: none; color: var(--text); text-align: left; font-size: 14px; }
+#add-menu button:hover, #add-menu button:focus-visible { background: var(--panel); outline: none; }
+#add-menu svg { width: 18px; height: 18px; flex: none; margin-top: 1px; color: var(--muted); }
+#add-menu small { display: block; color: var(--muted); font-size: 12px; }
 #pending { max-width: 780px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 #pending:empty { display: none; }
 .chip { display: inline-flex; align-items: center; gap: 6px; font: 12px var(--mono);
@@ -342,9 +350,15 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
   <div id="composer">
     <div id="pending"></div>
     <form id="send">
-      <button id="attach" class="btn attach" type="button" title="Upload files from this computer" aria-label="Upload files from this computer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg></button>
+      <div class="add-files">
+        <button id="add-files" class="btn attach" type="button" title="Attach files" aria-label="Attach files"
+                aria-haspopup="menu" aria-expanded="false" aria-controls="add-menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button>
+        <div id="add-menu" class="panel" role="menu" hidden>
+          <button id="attach" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg><span>From this device<small>Upload files or photos</small></span></button>
+          <button id="browse" type="button" role="menuitem"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>From the server<small>Pick files where acc runs</small></span></button>
+        </div>
+      </div>
       <input id="file" type="file" multiple hidden>
-      <button id="browse" class="btn attach" type="button" title="Pick files on the server" aria-label="Pick files on the server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
       <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
       <button id="go" class="btn primary" type="submit">Send</button>
     </form>
@@ -754,7 +768,8 @@ async function deleteSkill() {
 // -- rename, export, delete --------------------------------------------------------------------
 
 function closePanels(except) {
-  for (const [panel, button] of [["#skills-panel", "#skills-btn"], ["#export-panel", "#export-btn"]]) {
+  for (const [panel, button] of [["#skills-panel", "#skills-btn"], ["#export-panel", "#export-btn"],
+                                 ["#add-menu", "#add-files"]]) {
     if (panel === except) continue;
     $(panel).hidden = true;
     $(button).setAttribute("aria-expanded", "false");
@@ -1705,7 +1720,7 @@ $("#export-panel").addEventListener("click", (e) => {
 $("#rename-btn").addEventListener("click", rename);
 $("#title").addEventListener("dblclick", rename);
 $("#delete-btn").addEventListener("click", askDelete);
-document.addEventListener("click", (e) => { if (!e.target.closest(".controls")) closePanels(); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".controls, .add-files")) closePanels(); });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!$("#skills-sheet").hidden) {          // the form goes back to the list; the list closes
@@ -1724,8 +1739,16 @@ $("#skill-name").addEventListener("input", () => {
 $("#skills-sheet").addEventListener("click", (e) => {   // outside the sheet: only the list closes
   if (e.target === $("#skills-sheet") && $("#skill-form").hidden) closeSkills();
 });
-$("#attach").addEventListener("click", () => $("#file").click());
-$("#browse").addEventListener("click", openPicker);
+$("#add-files").addEventListener("click", () => {
+  if (togglePanel("#add-menu", "#add-files")) $("#attach").focus();
+});
+$("#add-menu").addEventListener("keydown", (e) => {    // up and down move between the two
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  ($(document.activeElement.id === "attach" ? "#browse" : "#attach")).focus();
+});
+$("#attach").addEventListener("click", () => { closePanels(); $("#file").click(); });
+$("#browse").addEventListener("click", () => { closePanels(); openPicker(); });
 $("#picker-done").addEventListener("click", closePicker);
 $("#picker").addEventListener("click", (e) => { if (e.target === $("#picker")) closePicker(); });
 $("#picker-filter").addEventListener("input", showFolder);
