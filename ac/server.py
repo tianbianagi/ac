@@ -177,6 +177,79 @@ def match(word, names):
             "covers": [os.path.realpath(p) for p in paths[:MAX_COVERS]]}
 
 
+def keep_upload(name, data):
+    """Save an uploaded file's bytes into the uploads folder under its own name, or beside a
+    different file of that name as "name 2.ext"; the same bytes again reuse the first copy."""
+    folder = config.uploads_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    name = Path(name).name or "upload"
+    stem, suffix = Path(name).stem, Path(name).suffix
+    for n in range(1, 1000):
+        path = folder / (name if n == 1 else f"{stem} {n}{suffix}")
+        if not path.exists():
+            path.write_bytes(data)
+            return path
+        if path.read_bytes() == data:
+            return path
+    raise BadRequest(f"too many uploads named {name}")
+
+
+def tagged_path(store, request):
+    """The file a tag request is about: {"path"} on this machine, {"upload": {"name", "data"}}
+    not sent yet, or {"attachment": ID} already in a conversation. An upload is kept in the
+    uploads folder first; one already sent is kept as the model saw it (a PDF as its text), and
+    its conversation learns where it now lives."""
+    if "upload" in request:
+        upload = request["upload"] if isinstance(request["upload"], dict) else {}
+        try:
+            data = base64.b64decode(str(upload.get("data") or ""), validate=True)
+        except (binascii.Error, ValueError):
+            raise BadRequest("the file didn't arrive intact") from None
+        return str(keep_upload(str(upload.get("name") or ""), data))
+    if "attachment" in request:
+        try:
+            a = store.attachment(int(request["attachment"]))
+        except (TypeError, ValueError, NotFound):
+            raise BadRequest("no such attachment") from None
+        if Path(a.path).is_absolute():
+            return a.path
+        if a.kind == "image":
+            data, name = a.data or b"", a.path
+        else:
+            data, name = (a.content or "").encode(), a.path
+            if name.lower().endswith(".pdf"):
+                name += ".txt"              # a PDF's text is not a PDF
+        path = str(keep_upload(name, data))
+        store.move_attachment(a.id, path)
+        return path
+    return str(request.get("path") or "").strip()
+
+
+def tag_file(store, request):
+    """Tag a file, or untag it, from {"path" | "upload" | "attachment" (see tagged_path), "tag":
+    TAG, "remove": bool}. A tag is an @name: @TAG in a message attaches every file tagged with
+    it, as they are then. A tag left with no files is forgotten; files are never deleted."""
+    tag = str(request.get("tag") or "").strip().lstrip("@").lower()
+    if not files.NAME.fullmatch(tag):
+        raise BadRequest("a tag is letters, digits, - and _, starting with a letter or digit")
+    word = tagged_path(store, request)
+    if not word.startswith(("/", "~")):
+        raise BadRequest("only a file on this machine can be tagged")
+    path = files.portable(word)
+    paths = store.resources().get(tag, [])
+    if request.get("remove"):             # however it was reached: through a link or not
+        paths = [p for p in paths if os.path.realpath(p) != os.path.realpath(path)]
+    else:
+        if files.resolve(word, explicit=True) is None:
+            raise BadRequest(f"nothing matches {word}")
+        paths = list(dict.fromkeys(paths + [path]))
+    if paths:
+        store.set_resource(tag, paths)
+    else:
+        store.delete_resource(tag)
+    return {"tag": tag, "paths": paths, "path": os.path.realpath(path)}
+
+
 def update_session(store, client, session, request):
     """Change a session's title, model or skills from {"title": ..., "model": NAME,
     "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's.
@@ -375,6 +448,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/chat":
                 return self._chat(store, request)
+            if path == "/api/tags":
+                try:
+                    return self._json(tag_file(store, request))
+                except BadRequest as e:
+                    return self._error(400, str(e))
             if path.startswith("/api/sessions/") and path.endswith("/export"):
                 return self._export(store, unquote(path[len("/api/sessions/"):-len("/export")]),
                                     request)
@@ -522,7 +600,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(match((query.get("path") or [""])[0], store.resources()))
         if path == "/names":
             return self._json({"names": [
-                {"name": name, "paths": [files.display_path(p) for p in paths]}
+                {"name": name, "paths": [files.display_path(p) for p in paths],
+                 "real": [os.path.realpath(p) for p in paths]}
                 for name, paths in store.resources().items()]})
         if path == "/skills":
             return self._json({"skills": [{"name": s.name, "description": s.description}

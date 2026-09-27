@@ -203,6 +203,16 @@ select.btn { padding-right: 8px; max-width: 100%; }
 #picker-status { padding: 2px 14px 12px; font-size: 13px; color: var(--muted); min-height: 1.5em; }
 #picker-status.error { color: var(--warn); }
 .chip.server { border-style: dashed; }
+.files span.tags, .chip .tags { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px;
+                               background: none; border: 0; padding: 0; font: inherit; }
+.tags button.tag { border: 0; border-radius: 4px; padding: 0 5px; background: var(--accent-soft); color: var(--accent);
+                   font: 11px/1.6 var(--mono); cursor: pointer; }
+.tags button.tag.add { background: none; color: var(--muted); font-size: 12px; }
+.tags button.tag.add:hover { color: var(--accent); }
+.tags button.tag.asking { background: none; color: var(--warn); }
+.tags input { width: 9em; padding: 0 5px; border: 1px solid var(--accent); border-radius: 4px;
+              background: var(--bg); color: var(--text); font: 11px/1.6 var(--mono); }
+.tags input:focus { outline: none; }
 body.dragging #chat { outline: 2px dashed var(--accent); outline-offset: -8px; }
 
 .msg { margin: 0 0 22px; }
@@ -311,6 +321,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
     </form>
   </div>
 </main>
+<datalist id="tag-names"></datalist>
 <div id="picker" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-label="Files on the server">
     <header>
@@ -737,14 +748,20 @@ async function applyLines() {
 
 function showPending() {
   showLines();
-  const chip = (text, cls, label, remove) => {
+  const chip = (text, cls, label, remove, tags = null) => {
     const drop = el("button", { type: "button", title: "Remove", "aria-label": `Remove ${label}` }, "×");
     drop.addEventListener("click", () => { remove(); showPending(); if (!$("#picker").hidden) showFolder(); });
-    return el("span", { class: cls }, text, drop);
+    return el("span", { class: cls }, text, tags, drop);
   };
   $("#pending").replaceChildren(
-    ...pending.map((f, i) => chip(`${f.name} · ${size(f.size)}`, "chip", f.name, () => pending.splice(i, 1))),
-    ...picked.map((p, i) => chip(`${p.label} · ${p.detail}`, "chip server", p.label, () => picked.splice(i, 1))));
+    ...pending.map((f, i) => chip(`${f.name} · ${size(f.size)}`, "chip", f.name, () => pending.splice(i, 1),
+      tagsFor(null, { upload: { name: f.name, data: f.data } }, async (path) => {
+        // Kept on this machine now: queue that copy in its place, so it goes as a tagged file.
+        pending = pending.filter((p) => p !== f);
+        if (!(await pick(path, f.name))) { pending.push(f); showPending(); }
+      }))),
+    ...picked.map((p, i) => chip(`${p.label} · ${p.detail}`, "chip server", p.label, () => picked.splice(i, 1),
+                                 p.kind === "name" ? null : tagsFor(p.real || p.path))));
 }
 
 // -- files on the server --------------------------------------------------------------------
@@ -882,10 +899,110 @@ function showFolder() {
   $("#picker-list").replaceChildren(...rows);
 }
 
+// -- tags ---------------------------------------------------------------------------------------
+// A file on this machine can be tagged, one file at a time, wherever its chip shows: queued or
+// already sent. @TAG in a message then attaches every file with that tag, as it is then. Tags
+// are the @names the folder picker lists; the last file untagged forgets the tag.
+
+let tagsOf = new Map();                    // where a file really is -> its tags
+
+async function loadNames() {
+  try { savedNames = (await api("/names")).names; } catch { savedNames = []; }
+  tagsOf = new Map();
+  for (const n of savedNames)
+    for (const path of n.real) tagsOf.set(path, [...(tagsOf.get(path) || []), n.name]);
+  $("#tag-names").replaceChildren(...savedNames.map((n) => el("option", { value: n.name })));
+  document.querySelectorAll(".tags[data-path]").forEach(showTags);
+}
+
+// The tags of one chip's file. An upload has no path yet: target says how the server gets it
+// ({"upload"} or {"attachment"}), and once tagged it is kept on this machine, which kept(path)
+// is told, so the chip can become that file.
+function tagsFor(path, target = null, kept = null) {
+  const span = el("span", { class: "tags" });
+  if (path) span.dataset.path = path;
+  span.target = target;
+  span.kept = kept;
+  showTags(span);
+  return span;
+}
+
+function showTags(span) {
+  const path = span.dataset.path;
+  const pills = (path && tagsOf.get(path) || []).map((tag) => {
+    const b = el("button", { type: "button", class: "tag", title: `Untag @${tag}` }, "@" + tag);
+    b.addEventListener("click", () => {
+      if (!b.classList.contains("asking")) {   // ask once, in place
+        b.classList.add("asking");
+        b.textContent = `untag @${tag}?`;
+        return;
+      }
+      setTag(path, tag, true);
+    });
+    return b;
+  });
+  const add = el("button", { type: "button", class: "tag add", title: "Add a tag", "aria-label": "Add a tag" }, "#");
+  add.addEventListener("click", () => askTag(span, add));
+  span.replaceChildren(...pills, add);
+}
+
+function askTag(span, add) {
+  const input = el("input", { list: "tag-names", placeholder: "tag", "aria-label": "Tag",
+                              autocapitalize: "off", autocomplete: "off", spellcheck: "false" });
+  add.replaceWith(input);
+  input.focus();
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    const tag = input.value.trim().replace(/^@/, "");
+    if (save && tag) addTag(span, tag); else showTags(span);
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+async function postTag(request) {
+  try {
+    const res = await fetch("/api/tags", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+  } catch (e) {
+    note(e.message, "error");
+    return null;
+  }
+}
+
+async function addTag(span, tag) {
+  const data = await postTag({ ...(span.dataset.path ? { path: span.dataset.path } : span.target), tag });
+  if (data && !span.dataset.path) {
+    span.dataset.path = data.path;
+    await span.kept?.(data.path);
+  }
+  await refreshTags();
+  if (!data) showTags(span);
+}
+
+async function setTag(path, tag, remove) {
+  await postTag({ path, tag, remove });
+  await refreshTags();
+}
+
+async function refreshTags() {
+  await loadNames();
+  if (!$("#picker").hidden) showFolder();
+}
+
 async function openPicker() {
   $("#picker").hidden = false;
   editingPaths = false;                    // an edit left unapplied last time is let go
-  try { savedNames = (await api("/names")).names; } catch { savedNames = []; }
+  await loadNames();
   if (!folder) await openFolder(remembered("acc.folder"));
   else showFolder();
   $("#picker-filter").focus();
@@ -922,6 +1039,8 @@ async function addFiles(list) {
 function fileChip(a) {
   const name = a.path.split("/").pop() || a.path;
   const chip = el("span", { title: [a.path, a.note].filter(Boolean).join(" · ") }, name);
+  if (a.path.startsWith("/")) chip.append(tagsFor(a.path));
+  else if (a.id != null) chip.append(tagsFor(null, { attachment: a.id }, (path) => { chip.title = path; }));
   if (a.id == null) return chip;
   const x = el("button", { type: "button", class: "remove", title: "Remove from this conversation",
                            "aria-label": `Remove ${name} from this conversation` }, "×");
@@ -1428,6 +1547,7 @@ window.addEventListener("hashchange", () => {
 
 (async () => {
   try { names = (await api("/config")).names; } catch {}
+  loadNames();
   await loadSessions();
   loadChoices();
   openSession(location.hash.slice(1) || "new");

@@ -417,6 +417,11 @@ class Store:
         return Attachment(path=row["path"], kind=row["kind"], content=row["content"],
                           data=row["data"], note=row["note"], id=row["id"])
 
+    def move_attachment(self, attachment_id, path):
+        """Say where an attached file now lives, as when an upload is kept on this machine."""
+        with self.db:
+            self.db.execute("UPDATE attachments SET path = ? WHERE id = ?", (str(path), attachment_id))
+
     def delete_attachment(self, attachment_id):
         """Take one file out of a conversation. The message it came with stays."""
         with self.db:

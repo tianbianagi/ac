@@ -55,6 +55,13 @@ def settings():
         return {}
 
 
+def uploads_dir():
+    """Where a file uploaded from the browser is kept once it is tagged: $AC_UPLOADS_DIR, else
+    ~/accspace/uploads. A tag needs a file on this machine to point at."""
+    override = os.environ.get("AC_UPLOADS_DIR")
+    return Path(override).expanduser() if override else Path.home() / "accspace" / "uploads"
+
+
 def export_dir():
     """Where exports go when no file is named: $AC_EXPORT_DIR, then export_dir in config.toml.
 

@@ -22,7 +22,8 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.db = Path(tmp.name) / "ac.db"
         env = mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(Path(tmp.name) / "config"),
-                                           "AC_SKILLS_PATH": str(Path(tmp.name) / "skills")})
+                                           "AC_SKILLS_PATH": str(Path(tmp.name) / "skills"),
+                                           "AC_UPLOADS_DIR": str(Path(tmp.name) / "uploads")})
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_MODEL", None)
@@ -435,6 +436,58 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((status, body["error"]), (404, f"nothing matches {root}/nope.txt"))
         _, body = self.get("/api/names")
         self.assertEqual(body["names"][0]["name"], "proj")
+
+    def test_tags_name_files_one_at_a_time(self):
+        root = self.tree()
+        notes, app = str(root / "notes.md"), str(root / "src" / "app.py")
+        status, body = self.post("/api/tags", {"path": notes, "tag": "@Plan"})
+        self.assertEqual((status, body["tag"], body["paths"]), (200, "plan", [notes]))
+        self.post("/api/tags", {"path": app, "tag": "plan"})
+        self.post("/api/tags", {"path": notes, "tag": "plan"})     # once is enough
+        self.assertEqual(self.store.resources()["plan"], [notes, app])
+        _, body = self.get("/api/names")
+        self.assertEqual(body["names"][0]["real"], [os.path.realpath(notes), os.path.realpath(app)])
+
+        status, body = self.post("/api/tags", {"path": str(root / "nope.md"), "tag": "plan"})
+        self.assertEqual((status, body["error"]), (400, f"nothing matches {root}/nope.md"))
+        self.assertEqual(self.post("/api/tags", {"path": "upload.png", "tag": "plan"})[0], 400)
+        self.assertEqual(self.post("/api/tags", {"path": notes, "tag": "two words"})[0], 400)
+
+        link = root.parent / "shortcut"          # untagging finds the file however it's reached
+        link.symlink_to(root)
+        self.post("/api/tags", {"path": str(link / "notes.md"), "tag": "plan", "remove": True})
+        self.assertEqual(self.store.resources()["plan"], [app])
+        self.post("/api/tags", {"path": app, "tag": "plan", "remove": True})
+        self.assertNotIn("plan", self.store.resources())      # no files left: the tag goes
+        self.assertTrue((root / "notes.md").exists())
+
+    def test_uploads_are_kept_when_tagged(self):
+        uploads = Path(os.environ["AC_UPLOADS_DIR"])
+        data = base64.b64encode(b"ship on friday").decode()
+        status, body = self.post("/api/tags", {"upload": {"name": "../plan.md", "data": data}, "tag": "plan"})
+        kept = uploads / "plan.md"                  # its own name, never a path
+        self.assertEqual((status, kept.read_text()), (200, "ship on friday"))
+        self.assertEqual((body["path"], self.store.resources()["plan"]), (os.path.realpath(kept), [str(kept)]))
+        self.post("/api/tags", {"upload": {"name": "plan.md", "data": data}, "tag": "work"})
+        self.assertEqual(len(list(uploads.iterdir())), 1)       # the same bytes: the same copy
+        other = base64.b64encode(b"ship on monday").decode()
+        _, body = self.post("/api/tags", {"upload": {"name": "plan.md", "data": other}, "tag": "plan"})
+        self.assertEqual(Path(body["path"]).name, "plan 2.md")
+
+        # Already sent: kept as the conversation holds it, and the conversation told where.
+        session = self.store.draft("m1")
+        self.store.save(session)
+        self.store.add_message(session.id, "user", "read these", attachments=[
+            Attachment("report.pdf", "text", content="[page 1]\nprofits up"),
+            Attachment("pic.png", "image", data=b"\x89PNG")])
+        text, pic = self.store.messages(session.id)[0].attachments
+        _, body = self.post("/api/tags", {"attachment": text.id, "tag": "q3"})
+        self.assertEqual(Path(body["path"]).name, "report.pdf.txt")
+        self.assertEqual(Path(body["path"]).read_text(), "[page 1]\nprofits up")
+        self.assertEqual(self.store.attachment(text.id).path, str(uploads / "report.pdf.txt"))
+        _, body = self.post("/api/tags", {"attachment": pic.id, "tag": "q3"})
+        self.assertEqual(Path(body["path"]).read_bytes(), b"\x89PNG")
+        self.assertEqual(self.post("/api/tags", {"attachment": 999, "tag": "q3"})[0], 400)
 
     def test_a_folder_typed_and_the_same_folder_browsed_agree(self):
         # However a file is reached, through a symlink or not, the picker sees one place.

@@ -76,9 +76,16 @@ it: `what does ~/notes/plan.md say about the budget?`
   text (about 100k tokens; `max_attach_kb` in `config.toml` changes that) and tells you what it
   left out. What you spell out is taken as meant, so `~/.config/ac/**` works although `.config`
   is hidden.
-- **Names.** `@NAME` attaches whatever the paths saved under that name hold at that moment. A
-  name wins over a file of the same name, and if one of its paths has gone you are told and get
-  the rest.
+- **Tags.** Every file chip, queued or already sent, has a `#`: tap it and type a tag (Enter
+  saves, Esc cancels) to tag that file. A tag points at a file on the machine running
+  `acc serve`, so tagging a file uploaded from your device first keeps a copy of it in
+  `~/accspace/uploads` (`AC_UPLOADS_DIR` moves that); one already sent is kept as the model saw
+  it, so a PDF becomes its text. From then on `@TAG` in any message, in
+  any session or in `acc ask`, attaches every file with that tag, as it is at that moment. A
+  file's tags show on its chip; tap one, then again to confirm, to untag it, and a tag with no
+  files left is forgotten (the files themselves are never touched). Tags are listed at the top of
+  the folder picker, where one can be queued like a file. A tag wins over a file of the same
+  name, and if one of its files has gone you are told and get the rest.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
   `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
   (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A
@@ -162,6 +169,7 @@ are dropped, and if another session already owns the name, the session id is app
 | --- | --- | --- |
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
+| `AC_UPLOADS_DIR` | where uploads are kept once tagged | `~/accspace/uploads` |
 | `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
 | `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
