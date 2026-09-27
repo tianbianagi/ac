@@ -165,6 +165,9 @@ select.btn { padding-right: 8px; max-width: 100%; }
                         justify-content: center; color: var(--muted); flex: none; }
 #composer .btn.attach:hover { color: var(--accent); }
 #composer .btn.attach svg { width: 20px; height: 20px; }
+#composer .btn.go { padding: 0; width: 42px; height: 42px; display: inline-flex; align-items: center;
+                    justify-content: center; flex: none; }
+#composer .btn.go svg { width: 20px; height: 20px; }
 /* One button for attaching, with its two sources in a menu that opens upward from it. */
 .add-files { position: relative; flex: none; }
 #add-menu { top: auto; bottom: 100%; margin: 0 0 6px; min-width: 250px; }
@@ -297,6 +300,10 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
           padding: 0; margin-bottom: 4px; cursor: pointer; }
   body.header-collapsed #back { margin-bottom: 0; flex: none; }
   #main > header, #chat, #composer { padding-left: 16px; padding-right: 16px; }
+  /* The message box gets the width: its two buttons shrink around it. */
+  #composer form { gap: 6px; }
+  #composer .btn.attach, #composer .btn.go { width: 36px; height: 36px; margin-bottom: 3px; }
+  #composer .btn.attach svg, #composer .btn.go svg { width: 18px; height: 18px; }
 }
 </style>
 </head>
@@ -360,7 +367,7 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       </div>
       <input id="file" type="file" multiple hidden>
       <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
-      <button id="go" class="btn primary" type="submit">Send</button>
+      <button id="go" class="btn primary go" type="submit" title="Send (Enter)" aria-label="Send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="m9 11-4 4 4 4"/></svg></button>
     </form>
   </div>
 </main>
@@ -1503,7 +1510,10 @@ function tick() {
 
 function setStreaming(on) {
   streaming = on;
-  $("#go").textContent = on ? "Stop" : "Send";
+  // Return sends; while a reply streams the same button stops it.
+  $("#go").innerHTML = on ? '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>' : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="m9 11-4 4 4 4"/></svg>';
+  $("#go").title = on ? "Stop" : "Send (Enter)";
+  $("#go").setAttribute("aria-label", on ? "Stop" : "Send");
   $("#go").classList.toggle("primary", !on);
   $("#new").disabled = !!on;
 }
