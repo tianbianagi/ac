@@ -23,6 +23,8 @@ from .ollama import Client, OllamaError, pick_model, resolve_model
 from .repl import RESERVED_OPTIONS, build_messages
 from .store import Ambiguous, NotFound, Store, StoreError, first_message_title
 
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_BODY = 64 << 20     # a message with its uploads, base64 and all
@@ -337,6 +339,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, "forbidden")
         url = urlsplit(self.path)
         path = url.path
+        if path == "/sw.js":        # served from the root so it may control the whole app
+            return self._static("sw.js")
         if path == "/" or path.startswith("/static/"):
             return self._static("index.html" if path == "/" else path[len("/static/"):])
         if not path.startswith("/api/"):

@@ -4,7 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>acc</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23d9772b'/%3E%3C/svg%3E">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="acc">
+<meta name="theme-color" content="#fbfaf8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1b1a18" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <style>
 :root {
   --bg: #fbfaf8; --panel: #f3f1ed; --text: #1f1d1a; --muted: #6f6a62; --line: #e2ded6;
@@ -1404,6 +1409,7 @@ window.addEventListener("hashchange", () => {
   openSession(location.hash.slice(1) || "new");
   document.body.classList.toggle("reading", !!location.hash.slice(1));
 })();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 </script>
 </body>
 </html>

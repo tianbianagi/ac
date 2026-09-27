@@ -121,6 +121,15 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.get("/static/../server.py")[0], 404)
         self.assertEqual(self.get("/nope")[0], 404)
 
+    def test_serves_what_installing_the_app_needs(self):
+        status, body = self.get("/static/manifest.webmanifest")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["start_url"], "/")
+        for icon in json.loads(body)["icons"]:
+            self.assertEqual(self.get(icon["src"])[0], 200)
+        self.assertEqual(self.get("/static/apple-touch-icon.png")[0], 200)
+        self.assertEqual(self.get("/sw.js")[0], 200)
+
     def test_refuses_other_host_names(self):
         # A page on another site could point its own hostname at 127.0.0.1 (DNS rebinding).
         status, _ = self.get("/api/sessions", host=f"evil.example:{self.port}")
