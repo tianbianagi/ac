@@ -62,6 +62,18 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.db.execute(
             "SELECT COUNT(*) FROM resources WHERE session_id = ?", (s.id,)).fetchone()[0], 0)
 
+    def test_tags_letting_go_of_files_is_noted(self):
+        s = self.make()
+        self.store.set_resource(s.id, "a", ["/f/one.md", "/f/two.md"])
+        self.assertEqual(self.store.released(), {})
+        self.store.set_resource(s.id, "a", ["/f/two.md"])
+        self.assertEqual(list(self.store.released()), ["/f/one.md"])
+        self.store.set_resource(s.id, "b", ["/f/three.md"])
+        self.store.delete_resource(s.id, "a")
+        self.store.delete(s.id)
+        self.assertEqual(sorted(self.store.released()), ["/f/one.md", "/f/three.md", "/f/two.md"])
+        self.assertEqual(self.store.tagged_everywhere(), set())
+
     def test_names_come_in_the_order_they_were_made(self):
         s = self.make()
         for name in ("zoo", "apple", "mid"):

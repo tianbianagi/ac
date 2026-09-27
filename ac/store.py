@@ -1,6 +1,7 @@
 """SQLite persistence for sessions and messages."""
 
 import json
+import os
 import secrets
 import sqlite3
 from dataclasses import dataclass, field
@@ -122,9 +123,18 @@ DROP TABLE resources;
 ALTER TABLE session_resources RENAME TO resources;
 """
 
+# When a tag last let go of a file (untagged, the tag changed, its session deleted), by where the
+# file really is: an uploaded file no tag holds is cleaned up only once it has been let go a while.
+RELEASED_SCHEMA = """
+CREATE TABLE released (
+    path TEXT PRIMARY KEY,
+    at   TEXT NOT NULL
+);
+"""
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
 MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA, ARCHIVED_SCHEMA,
-              OWNER_SCHEMA, SESSION_RESOURCES_SCHEMA]
+              OWNER_SCHEMA, SESSION_RESOURCES_SCHEMA, RELEASED_SCHEMA]
 
 
 class StoreError(Exception):
@@ -370,6 +380,9 @@ class Store:
 
     def delete(self, session_id):
         with self.db:
+            if self.db.execute("SELECT 1 FROM sessions WHERE id = ? AND owner = ?",
+                               (session_id, self.user)).fetchone():
+                self._release(p for paths in self.resources(session_id).values() for p in paths)
             self.db.execute("DELETE FROM sessions WHERE id = ? AND owner = ?",
                             (session_id, self.user))
 
@@ -421,6 +434,9 @@ class Store:
 
     def set_resource(self, session_id, name, paths):
         with self.db:
+            kept = {os.path.realpath(p) for p in paths}
+            self._release(p for p in self.resources(session_id).get(name, [])
+                          if os.path.realpath(p) not in kept)
             self.db.execute(
                 """INSERT INTO resources (session_id, name, path, created_at) VALUES (?, ?, ?, ?)
                    ON CONFLICT(session_id, name) DO UPDATE SET path = excluded.path""",
@@ -428,8 +444,25 @@ class Store:
 
     def delete_resource(self, session_id, name):
         with self.db:
+            self._release(self.resources(session_id).get(name, []))
             return self.db.execute("DELETE FROM resources WHERE session_id = ? AND name = ?",
                                    (session_id, name)).rowcount > 0
+
+    def _release(self, paths):
+        """Note that a tag has let go of these files, now."""
+        now = _now()
+        self.db.executemany("INSERT OR REPLACE INTO released (path, at) VALUES (?, ?)",
+                            [(os.path.realpath(p), now) for p in paths])
+
+    def tagged_everywhere(self):
+        """Where every file some tag holds really is, in every session of every user: what
+        cleaning up uploads must leave alone, whoever runs it."""
+        return {os.path.realpath(p) for (raw,) in self.db.execute("SELECT path FROM resources")
+                for p in (json.loads(raw) if raw.startswith("[") else [raw])}
+
+    def released(self):
+        """{where a file really is: when a tag last let go of it}."""
+        return {r["path"]: r["at"] for r in self.db.execute("SELECT path, at FROM released")}
 
     # -- messages ---------------------------------------------------------
 

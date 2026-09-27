@@ -61,6 +61,7 @@ acc ask --no-save "..."      # don't keep it as a session
 acc ask -S ID "..."          # ...or ask within an existing session
 
 acc skills [NAME]            acc models
+acc uploads [--clean] [--days N]   # uploads no tag needs any more; --clean trashes them
 ```
 
 A session is named by its id, a unique id prefix, or its exact title.
@@ -97,6 +98,11 @@ it: `what does ~/notes/plan.md say about the budget?`
   files left is forgotten (the files themselves are never touched). Tags are listed at the top of
   the folder picker, where one can be queued like a file. A tag wins over a file of the same
   name, and if one of its files has gone you are told and get the rest.
+- **Cleaning up uploads.** Nothing is cleaned up by itself. `acc uploads` lists the files in
+  the uploads folder (everyone's) that no tag in any session holds, and none has for 7 days
+  (`--days N`): since a tag last let go of it (untagged, the tag changed, its session deleted),
+  or since it was saved. `acc uploads --clean` moves them to the Trash. Conversations keep their
+  own copy of what was sent, and tagging a file whose kept copy was cleaned up keeps it again.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
   `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
   (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A

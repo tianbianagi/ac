@@ -101,7 +101,7 @@ class ServerTest(unittest.TestCase):
         user, reply = body["messages"]
         self.assertEqual(user["attachments"],
                          [{"id": 1, "path": "/tmp/notes.md", "kind": "text", "note": None,
-                           "size": 2}])
+                           "size": 2, "real": os.path.realpath("/tmp/notes.md")}])
         self.assertEqual((reply["role"], reply["content"], reply["thinking"]),
                          ("assistant", "**Day 1**: Alfama", "hmm"))
 
@@ -600,6 +600,28 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.store.resources(session.id), {"q3": [
             str(uploads / "report.pdf.txt"), str(uploads / "pic.png")]})
         self.assertEqual(self.post("/api/tags", {**soup, "attachment": 999, "tag": "q3"})[0], 400)
+
+    def test_a_kept_upload_cleaned_up_since_is_kept_again_when_tagged(self):
+        uploads = Path(os.environ["AC_UPLOADS_DIR"]) / self.store.user
+        session = self.store.save(self.store.draft("m1"))
+        self.store.add_message(session.id, "user", "read this", attachments=[
+            Attachment("report.pdf", "text", content="[page 1]\nprofits up")])
+        (a,) = self.store.messages(session.id)[0].attachments
+        _, body = self.post("/api/tags", {"session": session.id, "attachment": a.id, "tag": "q3"})
+        kept = uploads / "report.pdf.txt"
+        self.assertEqual(self.store.attachment(a.id).path, str(kept))
+        kept.unlink()                                               # acc uploads --clean
+        status, body = self.post("/api/tags", {"session": session.id, "attachment": a.id,
+                                               "tag": "q4"})
+        self.assertEqual((status, kept.read_text()), (200, "[page 1]\nprofits up"))
+        self.assertEqual(self.store.attachment(a.id).path, str(kept))
+
+        # A file of the user's own that has gone is not brought back: it was never ours to keep.
+        self.store.add_message(session.id, "user", "and this", attachments=[
+            Attachment("/nowhere/notes.md", "text", content="x")])
+        b = self.store.messages(session.id)[1].attachments[0]
+        status, body = self.post("/api/tags", {"session": session.id, "attachment": b.id, "tag": "x"})
+        self.assertEqual((status, body["error"]), (400, "nothing matches /nowhere/notes.md"))
 
     def test_a_new_chat_keeps_its_tags_until_the_first_message(self):
         root = self.tree()

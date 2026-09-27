@@ -51,7 +51,9 @@ def message_json(m):
             "prompt_tokens": m.prompt_tokens, "eval_tokens": m.eval_tokens,
             "duration_ms": m.duration_ms, "created_at": m.created_at,
             "attachments": [{"id": a.id, "path": a.path, "kind": a.kind, "note": a.note,
-                             "size": a.size} for a in m.attachments]}
+                             "size": a.size,
+                             "real": os.path.realpath(a.path) if a.path.startswith("/") else None}
+                            for a in m.attachments]}
 
 
 class BadRequest(Exception):
@@ -232,11 +234,18 @@ def keep_upload(name, data, user=None):
     raise BadRequest(f"too many uploads named {name}")
 
 
+def in_uploads(path):
+    """Whether a path is somewhere in the uploads folder, however either is reached."""
+    root = os.path.realpath(config.uploads_dir())
+    return os.path.realpath(path).startswith(root + os.sep)
+
+
 def tagged_path(store, request):
     """The file a tag request is about: {"path"} on this machine, {"upload": {"name", "data"}}
     not sent yet, or {"attachment": ID} already in a conversation. An upload is kept in the
     uploads folder first; one already sent is kept as the model saw it (a PDF as its text), and
-    its conversation learns where it now lives."""
+    its conversation learns where it now lives. If that kept copy has since been cleaned up
+    (`acc uploads --clean`), it is kept again from what the conversation holds."""
     if "upload" in request:
         upload = request["upload"] if isinstance(request["upload"], dict) else {}
         try:
@@ -249,12 +258,14 @@ def tagged_path(store, request):
             a = store.attachment(int(request["attachment"]))
         except (TypeError, ValueError, NotFound):
             raise BadRequest("no such attachment") from None
-        if Path(a.path).is_absolute():
+        kept_before = Path(a.path).is_absolute()
+        if kept_before and (Path(a.path).exists() or not in_uploads(a.path)):
             return a.path
+        name = Path(a.path).name if kept_before else a.path
         if a.kind == "image":
-            data, name = a.data or b"", a.path
+            data = a.data or b""
         else:
-            data, name = (a.content or "").encode(), a.path
+            data = (a.content or "").encode()
             if name.lower().endswith(".pdf"):
                 name += ".txt"              # a PDF's text is not a PDF
         path = str(keep_upload(name, data, store.user))

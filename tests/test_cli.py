@@ -106,6 +106,53 @@ class CliTest(unittest.TestCase):
         self.assertIn("attached", err)
         self.assertIn("ship on friday", self.fake.requests[-1]["messages"][0]["content"])
 
+    def test_uploads_no_tag_needs_go_to_the_trash_after_a_while(self):
+        uploads, home = self.tmp / "uploads", self.tmp / "home"
+        home.mkdir()
+        env = mock.patch.dict(os.environ, {"AC_UPLOADS_DIR": str(uploads), "HOME": str(home)})
+        env.start()
+        self.addCleanup(env.stop)
+        (uploads / "jaco").mkdir(parents=True)
+        week_ago = os.path.getmtime(self.tmp) - 8 * 86400
+        files = {}
+        for name in ("jaco/tagged.md", "jaco/old.md", "jaco/new.md", "jaco/let-go.md",
+                     "hagi-tagged.md", "jaco/.DS_Store"):
+            files[name] = uploads / name
+            files[name].write_text(name)
+            if name != "jaco/new.md":
+                os.utime(files[name], (week_ago, week_ago))
+        store = self.store()
+        mine = store.save(store.draft("m1"))
+        store.set_resource(mine.id, "keep", [str(files["jaco/tagged.md"]),
+                                             str(files["jaco/let-go.md"])])
+        store.set_resource(mine.id, "keep", [str(files["jaco/tagged.md"])])    # let go just now
+        hers = Store(config.db_path(), user="hagi")                # anyone's tag keeps a file
+        self.addCleanup(hers.close)
+        theirs = hers.save(hers.draft("m1"))
+        hers.set_resource(theirs.id, "x", [str(files["hagi-tagged.md"])])
+
+        code, out, _ = self.ac("uploads")
+        self.assertEqual((code, out.splitlines()[0].split("  ")[0]), (0, f"{uploads}/jaco/old.md"))
+        self.assertEqual(len(out.splitlines()), 2)                 # the one file, and the hint
+        self.assertTrue(files["jaco/old.md"].exists())            # listing changes nothing
+
+        code, out, _ = self.ac("uploads", "--clean")
+        self.assertEqual((code, out), (0, f"moved {uploads}/jaco/old.md to the Trash\n"))
+        self.assertEqual((home / ".Trash" / "old.md").read_text(), "jaco/old.md")
+        for kept in ("jaco/tagged.md", "jaco/new.md", "jaco/let-go.md", "hagi-tagged.md", "jaco/.DS_Store"):
+            self.assertTrue(files[kept].exists(), kept)
+
+        # Deleting the session lets its files go too; --days 0 takes them straight away.
+        store.delete(mine.id)
+        (uploads / "jaco" / "old.md").write_text("again")
+        code, out, _ = self.ac("uploads", "--clean", "--days", "0")
+        self.assertEqual(sorted(out.splitlines()), [
+            f"moved {uploads}/jaco/let-go.md to the Trash", f"moved {uploads}/jaco/new.md to the Trash",
+            f"moved {uploads}/jaco/old.md to the Trash", f"moved {uploads}/jaco/tagged.md to the Trash"])
+        self.assertEqual((home / ".Trash" / "old 2.md").read_text(), "again")   # beside the first
+        self.assertTrue(files["hagi-tagged.md"].exists())
+        self.assertIn("nothing to clean", self.ac("uploads")[1])
+
     def test_ask_no_save_and_empty(self):
         code, out, _ = self.ac("ask", "--no-save", "hi")
         self.assertEqual((code, out), (0, "ok\n"))

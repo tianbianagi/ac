@@ -1189,7 +1189,9 @@ async function postTag(request) {
 }
 
 async function addTag(span, tag) {
-  const data = await postTag({ ...(span.dataset.path ? { path: span.dataset.path } : span.target), tag });
+  const request = span.target?.attachment != null ? span.target        // see fileChip
+                : span.dataset.path ? { path: span.dataset.path } : span.target;
+  const data = await postTag({ ...request, tag });
   if (data && !span.dataset.path) {
     span.dataset.path = data.path;
     await span.kept?.(data.path);
@@ -1249,8 +1251,10 @@ async function addFiles(list) {
 function fileChip(a) {
   const name = a.path.split("/").pop() || a.path;
   const chip = el("span", { title: [a.path, a.note].filter(Boolean).join(" · ") }, name);
-  if (a.path.startsWith("/")) chip.append(tagsFor(a.path));
-  else if (a.id != null) chip.append(tagsFor(null, { attachment: a.id }, (path) => { chip.title = path; }));
+  // Tagged by the attachment when there is one, so a kept copy since cleaned up is kept again.
+  const target = a.id != null ? { attachment: a.id } : null;
+  if (a.path.startsWith("/")) chip.append(tagsFor(a.real || a.path, target));
+  else if (target) chip.append(tagsFor(null, target, (path) => { chip.title = path; }));
   if (a.id == null) return chip;
   const x = el("button", { type: "button", class: "remove", title: "Remove from this conversation",
                            "aria-label": `Remove ${name} from this conversation` }, "×");

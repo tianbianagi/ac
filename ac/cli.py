@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, chat, config, files, render, server, skills, titles
+from . import __version__, chat, config, files, render, server, skills, titles, uploads
 from .ollama import Client, OllamaError, pick_model, resolve_model
 from .store import Store, StoreError
 
@@ -180,6 +180,32 @@ def cmd_skills(args):
         print(f"{name.ljust(width)}  {skill.description}")
 
 
+def cmd_uploads(args):
+    """List uploaded files no tag needs any more, or with --clean move them to the Trash."""
+    found = uploads.unused(open_store(), days=args.days)
+    if not found:
+        print(f"nothing to clean: every upload is tagged, or was let go of less than "
+              f"{args.days} day{'' if args.days == 1 else 's'} ago")
+        return 0
+    status = 0
+    for u in found:
+        shown = files.display_path(u.path)
+        if not args.clean:
+            since = u.since.astimezone().strftime("%Y-%m-%d")
+            print(f"{shown}  {files._size(u.size)}  unused since {since}")
+            continue
+        try:
+            uploads.to_trash(u.path)
+            print(f"moved {shown} to the Trash")
+        except OSError as e:
+            print(f"{config.COMMAND}: can't move {shown}: {e.strerror or e}", file=sys.stderr)
+            status = 1
+    if not args.clean:
+        print(f"`{config.COMMAND} uploads --clean` moves {'this' if len(found) == 1 else 'these'} "
+              f"to the Trash")
+    return status
+
+
 def cmd_models(args):
     client = Client()
     rows = [("NAME", "PARAMS", "QUANT", "SIZE", "CAPABILITIES")]
@@ -273,6 +299,12 @@ def build_parser():
     p.add_argument("name", nargs="?")
 
     add("models", cmd_models, "list installed Ollama models")
+
+    p = add("uploads", cmd_uploads,
+            "list uploaded files no tag needs any more; --clean trashes them")
+    p.add_argument("--clean", action="store_true", help="move them to the Trash")
+    p.add_argument("--days", type=int, default=uploads.DEFAULT_DAYS, metavar="N",
+                   help=f"only files no tag has held for N days (default {uploads.DEFAULT_DAYS})")
 
     p = add("serve", cmd_serve, "browse sessions in a web browser")
     p.add_argument("-p", "--port", type=int, default=server.DEFAULT_PORT,
