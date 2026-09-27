@@ -31,7 +31,6 @@ class CliTest(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_MODEL", None)
-        os.environ.pop("AC_EXPORT_DIR", None)
 
     def ac(self, *argv, stdin=""):
         out, err = io.StringIO(), io.StringIO()
@@ -222,14 +221,15 @@ class CliTest(unittest.TestCase):
         target = self.tmp / "rye.md"
         self.ac("export", rye.id, "-o", str(target))
         self.assertIn("# Rye bread", target.read_text())
-        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "vault")}):
-            _, out, err = self.ac("export", rye.id, "--save")
+        code, _, err = self.ac("export", rye.id, "--save")   # there is no default folder
+        self.assertEqual(code, 2)
+        self.assertIn("expected one argument", err)
+        _, out, err = self.ac("export", rye.id, "--save", str(self.tmp / "vault") + "/")
         (saved,) = (self.tmp / "vault").glob("????-??-?? Rye bread.md")  # renamed by hand above
         self.assertEqual((out, err), ("", f"wrote {saved}\n"))
 
         self.fake.reply("Sourdough Starters Explained")
-        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(self.tmp / "vault")}):
-            _, out, err = self.ac("export", sourdough.id, "--save")
+        _, out, err = self.ac("export", sourdough.id, "--save", str(self.tmp / "vault"))
         self.assertIn("titled: Sourdough Starters Explained", err)
         self.assertEqual(len(list((self.tmp / "vault").glob("* Sourdough Starters Explained.md"))), 1)
 

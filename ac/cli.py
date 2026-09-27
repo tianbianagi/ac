@@ -116,8 +116,10 @@ def cmd_export(args):
     titles.ensure(store, Client(), session, say, say)
     messages = store.messages(session.id)
     text = render.to_markdown(session, messages, thinking=args.thinking)
-    if args.output or args.save:
-        path = Path(args.output).expanduser() if args.output else render.export_path(session)
+    if args.save:
+        path = Path(args.save).expanduser()
+        if path.is_dir() or args.save.endswith("/"):
+            path = render.export_path(session, path)
         try:
             render.write_export(path, text)
         except OSError as e:
@@ -285,9 +287,8 @@ def build_parser():
     p = add("export", cmd_export, "export a session as markdown")
     p.add_argument("id")
     p.add_argument("--thinking", action="store_true", help="include the model's reasoning")
-    p.add_argument("-o", "--output", metavar="FILE")
-    p.add_argument("--save", action="store_true",
-                   help='write "DATE TITLE.md" into the export folder instead of printing')
+    p.add_argument("-o", "--output", "--save", dest="save", metavar="PATH",
+                   help='write to PATH instead of printing; a folder gets "DATE TITLE.md"')
 
     p = add("ask", cmd_ask, "one-shot question; `-` or piped stdin supplies the prompt")
     session_setup(p)

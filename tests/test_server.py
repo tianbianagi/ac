@@ -465,27 +465,10 @@ class ServerTest(unittest.TestCase):
         self.assertIn("hmm", body["text"])
         self.assertEqual(len(self.fake.requests), 1)    # a title the model gave is kept
 
-    def test_export_saves_into_the_export_folder(self):
-        folder = Path(self.db).parent / "exports"
-        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(folder)}):
-            status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"save": True})
-        self.assertEqual(status, 200)
-        written = folder / body["filename"]
-        self.assertEqual(body["path"], str(written))
-        self.assertIn("# Trip to Lisbon", written.read_text())
-        self.assertNotIn("text", body)
-        self.assertEqual(self.fake.requests, [])        # a title the user gave is kept
-
     def test_export_problems(self):
         empty = self.store.save(self.store.draft("m1", title="Empty"))
         self.assertEqual(self.post(f"/api/sessions/{empty.id}/export", {}),
                          (400, {"error": "nothing to export: this session has no messages yet"}))
-        blocker = Path(self.db).parent / "a-file"
-        blocker.write_text("")
-        with mock.patch.dict(os.environ, {"AC_EXPORT_DIR": str(blocker / "sub")}):
-            status, body = self.post(f"/api/sessions/{self.lisbon.id}/export", {"save": True})
-        self.assertEqual(status, 400)
-        self.assertIn("can't write", body["error"])
 
 
     # -- files on the server ---------------------------------------------------

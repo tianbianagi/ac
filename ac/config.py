@@ -106,15 +106,6 @@ def uploads_dir(user=None):
     return base / user if user else base
 
 
-def export_dir(user=None):
-    """Where exports go when no file is named: $AC_EXPORT_DIR, then export_dir in config.toml.
-
-    None means the current directory.
-    """
-    raw = os.environ.get("AC_EXPORT_DIR") or user_settings(user).get("export_dir")
-    return Path(str(raw)).expanduser() if raw else None
-
-
 def speaker_names(user=None):
     """What exports call each side of the conversation: user_name and assistant_name in
     config.toml. Display only: the model is never told these names."""

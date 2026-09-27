@@ -346,7 +346,6 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
       <div id="export-panel" class="panel" hidden>
         <label><input id="export-thinking" type="checkbox"><span>Include reasoning<small>The model's thinking, folded under each reply</small></span></label>
         <div class="actions">
-          <button class="btn" type="button" data-save="1">Save to export folder</button>
           <button class="btn" type="button">Download markdown</button>
         </div>
         <div id="export-status" class="status" hidden></div>
@@ -815,7 +814,7 @@ function rename() {
   input.addEventListener("blur", () => finish(true));
 }
 
-async function exportSession(request) {
+async function exportSession() {
   if (!session) return;
   const id = session.id, status = $("#export-status");
   const buttons = $("#export-panel").querySelectorAll("button");
@@ -825,23 +824,19 @@ async function exportSession(request) {
   try {
     const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/export`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...request, thinking: $("#export-thinking").checked }),
+      body: JSON.stringify({ thinking: $("#export-thinking").checked }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     if (session && session.id === id) showHeader(data.session);
     loadSessions();
     for (const line of data.notes) note(line);
-    if (data.path) {
-      note(`Saved ${data.path}`);
-    } else {
-      const url = URL.createObjectURL(new Blob([data.text], { type: "text/markdown;charset=utf-8" }));
-      const link = el("a", { href: url, download: data.filename });
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
+    const url = URL.createObjectURL(new Blob([data.text], { type: "text/markdown;charset=utf-8" }));
+    const link = el("a", { href: url, download: data.filename });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     closePanels();
   } catch (e) {
     note(e.message, "error");
@@ -1723,9 +1718,7 @@ $("#export-btn").addEventListener("click", () => togglePanel("#export-panel", "#
 $("#archive-btn").addEventListener("click", () => { if (session) change({ archived: !session.archived_at }); });
 $("#archived-link").addEventListener("click", () => showArchived(!viewArchived));
 $("#export-panel").addEventListener("click", (e) => {
-  const button = e.target.closest("button");
-  if (!button) return;
-  exportSession(button.dataset.save ? { save: true } : {});
+  if (e.target.closest("button")) exportSession();
 });
 $("#rename-btn").addEventListener("click", rename);
 $("#title").addEventListener("dblclick", rename);

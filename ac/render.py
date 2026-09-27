@@ -3,7 +3,6 @@
 import os
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 from . import config, files, skills
 
@@ -101,18 +100,22 @@ def _is_export_of(path, session):
         return False
 
 
-def export_path(session):
-    """Default file for an export: "<date the session began> <title>.md" in the export folder.
+def export_name(session, suffix=""):
+    """An export's filename: "<date the session began> <title>.md".
 
-    The session's own date, not today's, so exporting again updates the same file. If another
-    session already owns that name, this one's id is added rather than overwriting it.
+    The session's own date, not today's, so exporting again updates the same file.
     """
     day = datetime.fromisoformat(session.created_at).astimezone().date().isoformat()
-    folder = config.export_dir(session.owner) or Path.cwd()
     name = safe_filename(session.title) or f"ac-{session.id}"
-    path = folder / f"{day} {name}.md"
+    return f"{day} {name}{suffix}.md"
+
+
+def export_path(session, folder):
+    """Where an export goes in a folder. If another session already owns its name there,
+    this one's id is added rather than overwriting it."""
+    path = folder / export_name(session)
     if path.exists() and not _is_export_of(path, session):
-        path = folder / f"{day} {name} ({session.id}).md"
+        path = folder / export_name(session, f" ({session.id})")
     return path
 
 

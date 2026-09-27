@@ -25,7 +25,7 @@ text keeps its line breaks. Replies stream in rendered as markdown, with reasoni
 **Stop** keeps the partial reply, and **Retry** asks again after a reply failed
 or was stopped. Attach files with the paperclip, which offers **From this device** (upload) and **From the server**, by dropping them on the chat, or by pasting an image; they are read as described under [Files](#files), and attached images show in the conversation. **From the server** picks files on the machine running `acc serve`, however you reach it: browse folders from your home, filter, and tick as many files as you like; ticking a folder takes everything in it, as `folder/**` would (hidden, ignored and binary files stay out). The box under the list holds everything queued, one path per line, and follows your ticks; edit it and press Enter to queue a path, a pattern such as `~/notes/**/*.md` or one of your `@names`, or delete a line to unqueue it. Paths named in a message are attached as well. The × on a sent file takes it out of the conversation, so the model stops seeing it from the next message on; the file itself is never touched. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
 The header, beside the session id, shows the context in use as a share of the model's window (Ollama's own figure while the model is loaded, otherwise marked ~ and taken from `num_ctx` or the model's maximum) (amber at 80%, red at 95%, when Ollama starts dropping the oldest messages) and how fast the latest reply came, counted live while it streams. The chevron at the header's right folds it to just the title, for more room on a phone; each browser remembers the choice. Hovering a message shows copy (the text as written, markdown for a reply) and delete, which takes just that message and its files out of the conversation. The pencil beside the title (or a double-click on it) renames the open session; the archive, export and delete icons at the top right act on it too. Archiving takes a session out of the list without deleting it: **Archived** at the bottom of the list shows those, a new message brings one back, and `acc ls --archived` lists them in the terminal, where `acc ls` leaves them out. Export
-saves `DATE TITLE.md` into your export folder or downloads it; it
+downloads the session as `DATE TITLE.md`; it
 first has the model name a session that still carries its first message as its title. The app
 can be installed from the browser (Add to Home Screen on an iPhone, Install in Chrome, Add to
 Dock in Safari) and then opens in its own window.
@@ -53,7 +53,7 @@ acc ls [--search QUERY] [--archived]   # full-text search over titles and messag
 acc show ID [--thinking]     acc rename ID TITLE
 acc fork ID [--at SEQ]       acc rm ID... [-y]
 acc set ID [-m MODEL] [--system TEXT] [--think on|off] [-o temperature=0.2] [--add-skill NAME]
-acc export ID [--thinking] [-o FILE | --save]   # markdown; prints unless told where to write
+acc export ID [--thinking] [--save PATH]       # markdown; prints unless given a file or folder
 
 acc ask "question"           # one-shot; prints only the answer
 git diff | acc ask "review this:" -        # `-` marks where piped stdin goes
@@ -159,9 +159,6 @@ and `acc ask -s`, by name or by path to any markdown file: `acc ask -s ./notes/s
 Personal settings live in `~/accspace/config/config.toml` (optional):
 
 ```toml
-# Where exports are saved when no filename is given.
-export_dir = "~/Documents/chats"
-
 # How much text a pattern such as src/** may attach to one message, in KB (default 400).
 max_attach_kb = 400
 
@@ -175,10 +172,11 @@ assistant_name = "Robin"
 assistant_name = "Robin"
 ```
 
-Exports are named `DATE TITLE.md`, for example `2026-09-20 Planning a Trip to Lisbon.md`. The
+`acc export --save` always takes a path (`-o` is the same option); there is no default export
+folder. Given a folder (one that exists, or a path ending in `/`), it writes `DATE TITLE.md` there,
+for example `2026-09-20 Planning a Trip to Lisbon.md`; a browser download gets the same name. The
 date is the day the session began, so exporting a session again updates its file rather than
-adding another. Without an `export_dir` they go to the current folder. A filename given to
-`-o` is used exactly as written.
+adding another. Any other path is used exactly as written.
 
 The names only label exported transcripts (`## Sam`, `## Robin`). They are never sent to the
 model, so they don't give it a persona.
@@ -195,7 +193,6 @@ are dropped, and if another session already owns the name, the session id is app
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
 | `AC_UPLOADS_DIR` | where uploads are kept once tagged, in a folder per user | `~/accspace/uploads` |
-| `AC_EXPORT_DIR` | export folder; overrides `export_dir` in `config.toml` | current folder |
 | `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |

@@ -503,9 +503,8 @@ def chat(store, client, request):
 
 
 def export(store, client, session, request):
-    """A session as markdown, the way `/export` makes it: a session still titled with its first
-    message is first named by the model. {"save": true} writes the file into the export
-    folder; otherwise the text comes back for the page to offer as a download."""
+    """A session as markdown, the way `/export` makes it, for the page to offer as a download:
+    a session still titled with its first message is first named by the model."""
     if not session.message_count:
         raise BadRequest("nothing to export: this session has no messages yet")
     notes = []
@@ -514,17 +513,8 @@ def export(store, client, session, request):
     session = store.get(session.id)
     messages = store.messages(session.id)
     text = render.to_markdown(session, messages, thinking=bool(request.get("thinking")))
-    path = render.export_path(session)
-    result = {"session": session_json(session), "notes": notes, "filename": path.name}
-    if request.get("save"):
-        try:
-            render.write_export(path, text)
-        except OSError as e:
-            raise BadRequest(f"can't write {files.display_path(path)}: {e.strerror or e}") from None
-        result["path"] = files.display_path(path)
-    else:
-        result["text"] = text
-    return result
+    return {"session": session_json(session), "notes": notes,
+            "filename": render.export_name(session), "text": text}
 
 
 class Handler(BaseHTTPRequestHandler):
