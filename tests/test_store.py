@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ac.store import (MIGRATIONS, OWNER_SCHEMA, SCHEMA, SESSION_RESOURCES_SCHEMA, Ambiguous,
+from ac.store import (DROP_RESOURCES_SCHEMA, MIGRATIONS, OWNER_SCHEMA, SCHEMA, Ambiguous,
                       Attachment, NotFound, Store)
 
 
@@ -39,53 +39,6 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.store.get(untitled.id).title_source, "model")
         self.assertEqual(self.store.fork(untitled.id).title_source, "model")
         self.assertEqual(self.store.fork(untitled.id, title="my branch").title_source, "user")
-
-    def test_named_paths_belong_to_one_session(self):
-        s, other = self.make(), self.make("other")
-        self.assertEqual((self.store.resources(s.id), self.store.resources(None)), ({}, {}))
-        self.store.set_resource(s.id, "mom", ["/vault/mom/*.md"])
-        self.store.set_resource(s.id, "trip", ["/notes/plan.md", "/notes/my tickets/*.pdf"])
-        self.store.set_resource(s.id, "mom", ["/vault/mum/*.md"])  # naming again moves the name
-        self.store.set_resource(other.id, "mom", ["/elsewhere.md"])
-        self.assertEqual(self.store.resources(s.id), {
-            "mom": ["/vault/mum/*.md"], "trip": ["/notes/plan.md", "/notes/my tickets/*.pdf"]})
-        self.assertEqual(self.store.resources(other.id), {"mom": ["/elsewhere.md"]})
-        self.assertTrue(self.store.delete_resource(s.id, "trip"))
-        self.assertFalse(self.store.delete_resource(s.id, "trip"))
-        self.assertEqual(self.store.resources(other.id), {"mom": ["/elsewhere.md"]})
-
-        fork = self.store.fork(s.id)                                # a fork takes them along
-        self.assertEqual(self.store.resources(fork.id), {"mom": ["/vault/mum/*.md"]})
-        self.store.set_resource(fork.id, "mom", ["/fork.md"])
-        self.assertEqual(self.store.resources(s.id), {"mom": ["/vault/mum/*.md"]})
-        self.store.delete(s.id)
-        self.assertEqual(self.store.db.execute(
-            "SELECT COUNT(*) FROM resources WHERE session_id = ?", (s.id,)).fetchone()[0], 0)
-
-    def test_tags_letting_go_of_files_is_noted(self):
-        s = self.make()
-        self.store.set_resource(s.id, "a", ["/f/one.md", "/f/two.md"])
-        self.assertEqual(self.store.released(), {})
-        self.store.set_resource(s.id, "a", ["/f/two.md"])
-        self.assertEqual(list(self.store.released()), ["/f/one.md"])
-        self.store.set_resource(s.id, "b", ["/f/three.md"])
-        self.store.delete_resource(s.id, "a")
-        self.store.delete(s.id)
-        self.assertEqual(sorted(self.store.released()), ["/f/one.md", "/f/three.md", "/f/two.md"])
-        self.assertEqual(self.store.tagged_everywhere(), set())
-
-    def test_names_come_in_the_order_they_were_made(self):
-        s = self.make()
-        for name in ("zoo", "apple", "mid"):
-            self.store.set_resource(s.id, name, ["/x.md"])
-        self.store.set_resource(s.id, "zoo", ["/x.md", "/y.md"])    # changing one keeps its place
-        self.assertEqual(list(self.store.resources(s.id)), ["zoo", "apple", "mid"])
-
-    def test_a_name_saved_before_names_could_hold_several_paths(self):
-        s = self.make()
-        self.store.db.execute("INSERT INTO resources VALUES (?, 'old', '/vault/old/*.md', "
-                              "'2026-01-01')", (s.id,))
-        self.assertEqual(self.store.resources(s.id), {"old": ["/vault/old/*.md"]})
 
     def test_update(self):
         s = self.make(skills=["a"])
@@ -313,24 +266,27 @@ class StoreTest(unittest.TestCase):
             self.addCleanup(hers.close)
             self.assertEqual(hers.list(), [])
 
-    def test_names_from_before_go_to_every_session_of_their_user(self):
+    def test_tags_from_before_are_dropped(self):
+        # Files come only with a message now: what earlier versions kept as tags and released
+        # paths goes, and nothing is read from those paths again.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ac.db"
             old = sqlite3.connect(path)
-            for step in MIGRATIONS[:MIGRATIONS.index(SESSION_RESOURCES_SCHEMA)]:
+            for step in MIGRATIONS[:MIGRATIONS.index(DROP_RESOURCES_SCHEMA)]:
                 old.executescript(step)
-            for sid, owner in (("aaaa1111", "tian"), ("bbbb2222", "tian"), ("cccc3333", "hagi")):
-                old.execute("INSERT INTO sessions (id, owner, model, created_at, updated_at) "
-                            "VALUES (?, ?, 'm1', '2026-01-01', '2026-01-01')", (sid, owner))
-            old.execute("INSERT INTO resources VALUES ('tian', 'notes', '[\"/a.md\"]', '2026-01-01')")
-            old.execute(f"PRAGMA user_version = {MIGRATIONS.index(SESSION_RESOURCES_SCHEMA)}")
+            old.execute("INSERT INTO sessions (id, owner, model, created_at, updated_at) "
+                        "VALUES ('aaaa1111', 'tian', 'm1', '2026-01-01', '2026-01-01')")
+            old.execute("INSERT INTO resources VALUES ('aaaa1111', 'notes', '[\"/a.md\"]', '2026-01-01')")
+            old.execute("INSERT INTO released VALUES ('/b.md', '2026-01-01')")
+            old.execute(f"PRAGMA user_version = {MIGRATIONS.index(DROP_RESOURCES_SCHEMA)}")
             old.commit()
             old.close()
             store = Store(path, user="tian")
             self.addCleanup(store.close)
-            self.assertEqual(store.resources("aaaa1111"), {"notes": ["/a.md"]})
-            self.assertEqual(store.resources("bbbb2222"), {"notes": ["/a.md"]})
-            self.assertEqual(store.resources("cccc3333"), {})
+            self.assertEqual(store.get("aaaa1111").owner, "tian")
+            names = {r[0] for r in store.db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            self.assertNotIn("resources", names)
+            self.assertNotIn("released", names)
 
     def test_persists_across_connections(self):
         with tempfile.TemporaryDirectory() as tmp:

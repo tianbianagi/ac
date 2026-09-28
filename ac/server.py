@@ -1,20 +1,22 @@
 """A local web server for chatting in the browser: `acc serve`.
 
 It listens on 127.0.0.1 only and answers only requests addressed to it by that name (or by a
-name passed with --allow-host, for a proxy in front of it), since it can read every session and
-the files a message names. Each request opens its own connection
-to the database, so the server can answer several at once.
+name passed with --allow-host, for a proxy in front of it), since it can read every session.
+Each request opens its own connection to the database, so the server can answer several at
+once.
 
 It serves the users config.toml names, each with their own sessions and skills. The
 proxy says who is asking in the X-Acc-User header, from the client certificate it checked; a
 request without one (as from a browser on this machine) is the owner's.
+
+Files reach a conversation only as part of a message, sent from the device the page is on.
+Nothing here names, browses or reads a path on this machine.
 """
 
 import base64
 import binascii
 import json
 import mimetypes
-import os
 import tempfile
 import threading
 import time
@@ -33,7 +35,7 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-MAX_BODY = 64 << 20     # a message with its uploads, base64 and all
+MAX_BODY = 64 << 20     # a message with its files, base64 and all
 USER_HEADER = "X-Acc-User"
 IMAGE_TYPES = [(b"\x89PNG", "image/png"), (b"\xff\xd8", "image/jpeg"), (b"GIF8", "image/gif"),
                (b"RIFF", "image/webp")]
@@ -53,12 +55,15 @@ def message_json(m):
             "prompt_tokens": m.prompt_tokens, "eval_tokens": m.eval_tokens,
             "duration_ms": m.duration_ms, "created_at": m.created_at,
             "attachments": [{"id": a.id, "path": a.path, "kind": a.kind, "note": a.note,
-                             "size": a.size,
-                             "real": os.path.realpath(a.path) if a.path.startswith("/") else None}
+                             "size": a.size}
                             for a in m.attachments]}
 
 
 class BadRequest(Exception):
+    pass
+
+
+class Forbidden(Exception):
     pass
 
 
@@ -72,269 +77,39 @@ def usage(client, session, messages):
     return {"used": None, "context": context, "exact": exact}
 
 
-def read_uploads(uploads):
-    """Attachments for files the page sent as {"name", "data" (base64)}, plus lines the user
-    should see. Each is read as the same file on disk would be, so a PDF gives its text (or
-    page images) and an image goes to the model as an image; it is known by its own name."""
-    if not isinstance(uploads, list):
+def read_files(sent):
+    """Attachments for the files the page sent with a message as {"name", "data" (base64)},
+    plus lines the user should see. Each is read once from a temporary folder, as the same
+    file on disk would be, so a PDF gives its text (or page images) and an image goes to the
+    model as an image; it is known by its own name, never by a path."""
+    if not isinstance(sent, list):
         raise BadRequest("files must be a list")
     attachments, notes = [], []
     with tempfile.TemporaryDirectory(prefix="acc-upload-") as tmp:
-        for i, upload in enumerate(uploads):
+        for i, upload in enumerate(sent):
             if not isinstance(upload, dict):
                 raise BadRequest("each file needs a name and data")
-            name = Path(str(upload.get("name") or f"file-{i + 1}")).name or f"file-{i + 1}"
+            name = Path(str(upload.get("name") or "")).name
+            if name in ("", ".", ".."):
+                name = f"file-{i + 1}"
             try:
                 data = base64.b64decode(str(upload.get("data") or ""), validate=True)
             except (binascii.Error, ValueError):
                 raise BadRequest(f"{name} didn't arrive intact") from None
-            folder = Path(tmp) / str(i)         # its own folder: two uploads may share a name
+            folder = Path(tmp) / str(i)         # its own folder: two files may share a name
             folder.mkdir()
             path = folder / name
             path.write_bytes(data)
             try:
                 got, said = files.read_all(path)
             except files.FileError as e:
-                notes.append(str(e).replace(str(folder) + "/", ""))
+                notes.append(str(e))
                 continue
             for a in got:
                 a.path = a.path.replace(str(folder) + "/", "")
             attachments += got
-            notes += [line.replace(str(folder) + "/", "") for line in said]
+            notes += said
     return attachments, notes
-
-
-def path_refs(paths, names):
-    """Refs for what the page's server-file picker queued, plus lines the user should see.
-
-    Each entry is a path on this machine as the picker gives it: a file is attached as it is,
-    a folder with everything in it (the way folder/** would be, so hidden, ignored and binary
-    files stay out), a pattern with what it matches, and @NAME with what the name stands for.
-    """
-    if not isinstance(paths, list):
-        raise BadRequest("paths must be a list")
-    refs, problems = [], []
-    for raw in paths:
-        word = str(raw).strip()
-        if not word:
-            continue
-        if word.startswith("@") and word[1:].lower() in names:
-            refs += files.named_refs(word[1:].lower(), names, problems)
-            continue
-        folder = Path(word).expanduser()
-        if "*" not in word and folder.is_dir():
-            ref = files.resolve(os.path.join(folder, "**"), explicit=True)
-            if ref is None:
-                problems.append(f"nothing in {files.display_path(folder)}/ to attach")
-            else:
-                refs.append(ref._replace(label=files.display_path(folder.resolve()) + "/"))
-            continue
-        ref = files.resolve(word, explicit=True)
-        if ref is None:
-            problems.append(f"nothing matches {word}")
-        else:
-            refs.append(ref)
-    return refs, problems
-
-
-def read_uploads_queued(queue):
-    """What the page queued, in its order, with each upload already read, so a broken one is
-    refused before anything is saved: entries {"upload": {"name", "data"}} (see read_uploads)
-    become (attachments, notes); entries {"path": ...} stay as the path, for read_queue."""
-    if not isinstance(queue, list):
-        raise BadRequest("queue must be a list")
-    read = []
-    for item in queue:
-        if isinstance(item, dict) and "upload" in item:
-            read.append(read_uploads([item["upload"]]))
-        elif isinstance(item, dict) and "path" in item:
-            read.append(str(item["path"]))
-        else:
-            raise BadRequest("each queued entry is an upload or a path")
-    return read
-
-
-def read_queue(read, names):
-    """Attachments for what the page queued, in the order it was queued, plus lines the user
-    should see: read_uploads_queued's entries, with each path read as path_refs finds it."""
-    attachments, notes = [], []
-    for item in read:
-        if isinstance(item, str):
-            refs, problems = path_refs([item], names)
-            got, said = files.read_refs(refs, already=attachments)
-            said = problems + said
-        else:
-            got, said = item
-        attachments += got
-        notes += said
-    return attachments, notes
-
-
-def browse(folder, user=None):
-    """What a folder on this machine holds, for the page's picker: folders first, then files,
-    leaving out hidden, ignored and dependency files. Paths stay as they were reached, so a folder entered
-    through a symlink (~/accspace) keeps that name rather than where the link points. With no
-    folder named it opens at the user's start_dir, or home if that isn't a folder."""
-    if not folder:
-        start = config.start_dir(user)
-        folder = str(start) if start and start.is_dir() else "~"
-    path = Path(os.path.abspath(Path(folder).expanduser()))
-    if not path.is_dir():
-        raise NotFound(f"{folder} isn't a folder here")
-    entries = []
-    for found in files.here(path):
-        item = path / found.name
-        try:
-            is_dir = item.is_dir()
-            entries.append({"name": item.name, "path": str(item), "real": os.path.realpath(item),
-                            "dir": is_dir,
-                            "size": None if is_dir else item.stat().st_size})
-        except OSError:
-            continue
-    return {"dir": str(path), "display": files.display_path(path),
-            "parent": str(path.parent) if path.parent != path else None,
-            "home": os.path.abspath(Path.home()), "entries": entries}
-
-
-MAX_COVERS = 5000
-
-
-def match(word, names):
-    """What one picker entry covers, before it is queued, so the page can show it however it
-    was chosen, ticked in a folder or typed: {"kind", "count", "size", "path" (the entry as
-    the page should send it), "real" (where a file or folder really is), "covers" (the files
-    it brings, by where they really are, up to MAX_COVERS)}."""
-    word = word.strip()
-    refs, problems = path_refs([word], names)
-    if not refs:
-        raise NotFound(problems[0] if problems else f"nothing matches {word}")
-    kind = ("name" if word.startswith("@") else "pattern" if "*" in word
-            else "folder" if Path(word).expanduser().is_dir() else "file")
-    path = word if kind == "name" else os.path.abspath(os.path.expanduser(word))
-    paths = [p for r in refs for p in (r.matches if r.matches is not None else [r.path])]
-    size = 0
-    for p in paths:
-        try:
-            size += p.stat().st_size
-        except OSError:
-            pass
-    return {"kind": kind, "count": len(paths), "size": size, "path": path,
-            "real": os.path.realpath(path) if kind in ("file", "folder") else None,
-            "covers": [os.path.realpath(p) for p in paths[:MAX_COVERS]]}
-
-
-def keep_upload(name, data, user=None):
-    """Save an uploaded file's bytes into the user's uploads folder under its own name, or beside
-    a different file of that name as "name 2.ext"; the same bytes again reuse the first copy."""
-    folder = config.uploads_dir(user)
-    folder.mkdir(parents=True, exist_ok=True)
-    name = Path(name).name or "upload"
-    stem, suffix = Path(name).stem, Path(name).suffix
-    for n in range(1, 1000):
-        path = folder / (name if n == 1 else f"{stem} {n}{suffix}")
-        if not path.exists():
-            path.write_bytes(data)
-            return path
-        if path.read_bytes() == data:
-            return path
-    raise BadRequest(f"too many uploads named {name}")
-
-
-def in_uploads(path):
-    """Whether a path is somewhere in the uploads folder, however either is reached."""
-    root = os.path.realpath(config.uploads_dir())
-    return os.path.realpath(path).startswith(root + os.sep)
-
-
-def tagged_path(store, request):
-    """The file a tag request is about: {"path"} on this machine, {"upload": {"name", "data"}}
-    not sent yet, or {"attachment": ID} already in a conversation. An upload is kept in the
-    uploads folder first; one already sent is kept as the model saw it (a PDF as its text), and
-    its conversation learns where it now lives. If that kept copy has since been cleaned up
-    (`acc uploads --clean`), it is kept again from what the conversation holds."""
-    if "upload" in request:
-        upload = request["upload"] if isinstance(request["upload"], dict) else {}
-        try:
-            data = base64.b64decode(str(upload.get("data") or ""), validate=True)
-        except (binascii.Error, ValueError):
-            raise BadRequest("the file didn't arrive intact") from None
-        return str(keep_upload(str(upload.get("name") or ""), data, store.user))
-    if "attachment" in request:
-        try:
-            a = store.attachment(int(request["attachment"]))
-        except (TypeError, ValueError, NotFound):
-            raise BadRequest("no such attachment") from None
-        kept_before = Path(a.path).is_absolute()
-        if kept_before and (Path(a.path).exists() or not in_uploads(a.path)):
-            return a.path
-        name = Path(a.path).name if kept_before else a.path
-        if a.kind == "image":
-            data = a.data or b""
-        else:
-            data = (a.content or "").encode()
-            if name.lower().endswith(".pdf"):
-                name += ".txt"              # a PDF's text is not a PDF
-        path = str(keep_upload(name, data, store.user))
-        store.move_attachment(a.id, path)
-        return path
-    return str(request.get("path") or "").strip()
-
-
-def check_tag(tag):
-    tag = str(tag or "").strip().lstrip("@").lower()
-    if not files.NAME.fullmatch(tag):
-        raise BadRequest("a tag is letters, digits, - and _, starting with a letter or digit")
-    return tag
-
-
-def draft_tags(raw):
-    """The tags a new chat's page holds until its first message makes the session, as
-    {TAG: [path, ...]}: sent with that message, and with a picker lookup before it."""
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            raise BadRequest("bad tags") from None
-    if not isinstance(raw, dict):
-        raise BadRequest("tags must map each tag to its paths")
-    tags = {}
-    for tag, paths in raw.items():
-        if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
-            raise BadRequest("tags must map each tag to its paths")
-        kept = [files.portable(p) for p in paths if p.startswith(("/", "~"))]
-        if kept:
-            tags[check_tag(tag)] = list(dict.fromkeys(kept))
-    return tags
-
-
-def tag_file(store, request):
-    """Tag a file, or untag it, from {"session": ID, "path" | "upload" | "attachment" (see
-    tagged_path), "tag": TAG, "remove": bool}. A tag is an @name of that session: @TAG in one of
-    its messages attaches every file tagged with it, as they are then. A tag left with no files
-    is forgotten; files are never deleted. Without a session (a new chat) nothing is saved: the
-    answer's "portable" path is for the page to keep until the first message."""
-    tag = check_tag(request.get("tag"))
-    session = store.get(str(request["session"])) if request.get("session") else None
-    word = tagged_path(store, request)
-    if not word.startswith(("/", "~")):
-        raise BadRequest("only a file on this machine can be tagged")
-    path = files.portable(word)
-    if session is None:
-        if not request.get("remove") and files.resolve(word, explicit=True) is None:
-            raise BadRequest(f"nothing matches {word}")
-        return {"tag": tag, "path": os.path.realpath(path), "portable": path}
-    paths = store.resources(session.id).get(tag, [])
-    if request.get("remove"):             # however it was reached: through a link or not
-        paths = [p for p in paths if os.path.realpath(p) != os.path.realpath(path)]
-    else:
-        if files.resolve(word, explicit=True) is None:
-            raise BadRequest(f"nothing matches {word}")
-        paths = list(dict.fromkeys(paths + [path]))
-    if paths:
-        store.set_resource(session.id, tag, paths)
-    else:
-        store.delete_resource(session.id, tag)
-    return {"tag": tag, "paths": paths, "path": os.path.realpath(path)}
 
 
 def skills_json(user):
@@ -362,12 +137,22 @@ def skill_json(user, scope, name):
     return {"scope": scope, "name": name, "description": meta.get("description", ""), "body": body}
 
 
+def may_change(user, scope):
+    """Only the owner changes what everyone shares: another user could otherwise write into
+    the owner's conversations through a shared skill."""
+    if scope == "shared" and user != config.owner():
+        raise Forbidden("only the owner can change shared skills")
+
+
 def save_skill(user, request):
     """Create or change a skill from {"scope", "name", "description", "body", "was"?: {"scope",
     "name"}}; see skills.save."""
     was = request.get("was")
     if was is not None and not (isinstance(was, dict) and was.get("scope") and was.get("name")):
         raise BadRequest("was must say the skill's scope and name")
+    may_change(user, str(request.get("scope") or ""))
+    if was is not None:
+        may_change(user, str(was.get("scope")))
     try:
         skills.save(user, str(request.get("scope") or ""), request.get("name"),
                     request.get("description"), request.get("body"), was)
@@ -378,7 +163,7 @@ def save_skill(user, request):
 
 def update_session(store, client, session, request):
     """Change a session's title, model or skills from {"title": ..., "model": NAME,
-    "skills": [REF, ...]}. A title given here is the user's, never replaced by the model's.
+    "skills": [NAME, ...]}. A title given here is the user's, never replaced by the model's.
     ({"archived": true|false} is handled by the caller, once these have been saved.)"""
     if "title" in request:
         title = " ".join(str(request["title"] or "").split())
@@ -401,10 +186,10 @@ def update_session(store, client, session, request):
 
 def chat(store, client, request):
     """One turn, as events for the page: the session, the user's message, the reply as it
-    streams, then the saved reply. {"session": ID?, "text": ..., "model": ...?, "queue": [...]?}
-    sends a message, starting a new session when no id is given, with the files queued for it
-    (see read_queue; "files" and "paths" say the same as uploads then paths); {"session": ID,
-    "retry": true} asks again for the reply to the last message.
+    streams, then the saved reply. {"session": ID?, "text": ..., "model": ...?, "files": [...]?}
+    sends a message, starting a new session when no id is given, with the files the page sent
+    for it (see read_files); {"session": ID, "retry": true} asks again for the reply to the
+    last message.
 
     Closing the generator mid-reply is the page going away: the partial reply is kept, marked
     interrupted, as Ctrl-C keeps it in the terminal.
@@ -420,14 +205,8 @@ def chat(store, client, request):
     else:
         session = store.draft(pick_model(client, request.get("model") or None))
         update_session(store, client, session, {"skills": request.get("skills") or []})
-    tags = draft_tags(request.get("tags") or {}) if not session.persisted else {}
-    queue = request.get("queue")
-    if queue is None:
-        uploads, paths = request.get("files") or [], request.get("paths") or []
-        if not isinstance(uploads, list) or not isinstance(paths, list):
-            raise BadRequest("files and paths must be lists")
-        queue = [{"upload": f} for f in uploads] + [{"path": p} for p in paths]
-    queue = read_uploads_queued(queue) if not retry else []
+    # Read before anything is saved, so a broken file is refused with nothing to undo.
+    attachments, notes = read_files(request.get("files") or []) if not retry else ([], [])
 
     if retry:
         messages = store.messages(session.id)
@@ -441,16 +220,10 @@ def chat(store, client, request):
         if not session.persisted:
             session.title, session.title_source = first_message_title(text), "auto"
             store.save(session)
-            for tag, paths in tags.items():     # what the new chat's page tagged before this
-                store.set_resource(session.id, tag, paths)
         if session.archived_at:             # a new message brings it back, as in a mail inbox
             store.set_archived(session.id, False)
-        names = store.resources(session.id)
-        queued, queue_notes = read_queue(queue, names)
-        found, problems = files.collect(text, names, already=queued)
-        attachments = queued + found
         yield {"type": "session", "session": session_json(store.get(session.id))}
-        for line in queue_notes + problems + files.announce(attachments):
+        for line in notes + files.announce(attachments):
             yield {"type": "note", "text": line}
         sent = store.add_message(session.id, "user", text, attachments=attachments)
         yield {"type": "message", "message": message_json(sent)}
@@ -675,13 +448,8 @@ class Handler(BaseHTTPRequestHandler):
                                        **skills_json(store.user)})
                 except BadRequest as e:
                     return self._error(400, str(e))
-            if path == "/api/tags":
-                try:
-                    return self._json(tag_file(store, request))
-                except BadRequest as e:
-                    return self._error(400, str(e))
-                except (NotFound, Ambiguous) as e:
-                    return self._error(404, str(e))
+                except Forbidden as e:
+                    return self._error(403, str(e))
             if path.startswith("/api/sessions/") and path.endswith("/stop"):
                 return self._stop(store, unquote(path[len("/api/sessions/"):-len("/stop")]))
             if path.startswith("/api/sessions/") and path.endswith("/export"):
@@ -720,7 +488,10 @@ class Handler(BaseHTTPRequestHandler):
         """Delete one of a library's skills. Sessions that attached it are told it's gone."""
         user = self._user()
         try:
+            may_change(user, scope)
             skills.remove(user, scope, name)
+        except Forbidden as e:
+            return self._error(403, str(e))
         except skills.SkillError as e:
             return self._error(404, str(e))
         return self._json({"deleted": name, **skills_json(user)})
@@ -740,8 +511,8 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
 
     def _delete_attachment(self, ref):
-        """Take one file out of a conversation: the message it came
-        with stays, the file on disk is never touched, and the model doesn't see it again."""
+        """Take one file out of a conversation: the message it came with stays, and the model
+        doesn't see it again."""
         store = self._store()
         try:
             try:
@@ -853,7 +624,8 @@ class Handler(BaseHTTPRequestHandler):
                                "usage": usage(self.client, session, messages),
                                "replying": replying(store.user, session.id)})
         if path == "/config":
-            return self._json({"names": config.speaker_names(store.user), "user": store.user})
+            return self._json({"names": config.speaker_names(store.user), "user": store.user,
+                               "owner": store.user == config.owner()})
         if path == "/models":
             try:
                 models = self.client.list_models()
@@ -863,15 +635,6 @@ class Handler(BaseHTTPRequestHandler):
                 {"name": m["name"], "size": m.get("size"),
                  "parameter_size": (m.get("details") or {}).get("parameter_size")}
                 for m in models]})
-        if path == "/browse":
-            return self._json(browse((query.get("dir") or [""])[0], store.user))
-        if path == "/match":
-            return self._json(match((query.get("path") or [""])[0], self._names(store, query)))
-        if path == "/names":
-            return self._json({"names": [
-                {"name": name, "paths": [files.display_path(p) for p in paths],
-                 "real": [os.path.realpath(p) for p in paths]}
-                for name, paths in self._names(store, query).items()]})
         if path == "/skills":
             return self._json(skills_json(store.user))
         if path.startswith("/skills/"):
@@ -891,13 +654,6 @@ class Handler(BaseHTTPRequestHandler):
                         "application/octet-stream")
             return self._send(200, a.data, kind)
         return self._error(404, "not found")
-
-    def _names(self, store, query):
-        """The @names a lookup may use: those of ?session=ID, or a new chat's ?tags=JSON."""
-        ref = (query.get("session") or [""])[0]
-        if ref:
-            return store.resources(store.get(ref).id)
-        return draft_tags((query.get("tags") or ["{}"])[0])
 
     def _host_ok(self):
         """Only requests addressed to this machine by name: a page elsewhere can't reach the
@@ -945,7 +701,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass                            # the page went away before it read the answer
 
 
 def make_server(port=DEFAULT_PORT, db_path=None, client=None, quiet=True, allowed_hosts=()):

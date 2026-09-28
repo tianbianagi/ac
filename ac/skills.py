@@ -2,11 +2,11 @@
 
 A skill is a directory holding a SKILL.md: optional `---` frontmatter (name, description)
 followed by a markdown body. Nothing in a skill is executed; the body is simply composed
-into the system prompt of sessions that attach it.
+into the system prompt of sessions that attach it. A session names its skills, and a name is
+looked up in the skill libraries only: nothing outside them can be attached.
 """
 
 import hashlib
-import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -64,7 +64,8 @@ def parse(text):
 
 
 def load(path):
-    path = Path(path).expanduser()
+    """The skill in a library folder (or its SKILL.md)."""
+    path = Path(path)
     if path.is_dir():
         path = path / FILENAME
     try:
@@ -72,10 +73,8 @@ def load(path):
     except OSError as e:
         raise SkillError(f"can't read skill {path}: {e.strerror or e}") from None
     meta, body = parse(text)
-    # The name is what the user types to attach it: the directory (or file) name.
-    name = path.parent.name if path.name == FILENAME else path.stem
-    return Skill(name=name, description=meta.get("description", ""), body=body, path=path,
-                 sha=hashlib.sha256(text.encode()).hexdigest()[:12])
+    return Skill(name=path.parent.name, description=meta.get("description", ""), body=body,
+                 path=path, sha=hashlib.sha256(text.encode()).hexdigest()[:12])
 
 
 def discover(dirs=None):
@@ -93,35 +92,32 @@ def discover(dirs=None):
     return found
 
 
-def _is_path(ref):
-    return os.sep in ref or ref.endswith(".md") or ref.startswith(("~", "."))
-
-
 def label(ref):
-    """Short display name for a stored ref."""
-    if not _is_path(ref):
+    """Short display name for a stored ref. A session from before skills were names only may
+    still hold a path; it shows by its folder."""
+    if "/" not in ref:
         return ref
     path = Path(ref)
     return path.parent.name if path.name == FILENAME else path.stem
 
 
 def normalize_ref(ref, dirs=None):
-    """Validate a user-typed skill reference; return the form stored on the session."""
-    if _is_path(ref):
-        return str(load(Path(ref).expanduser().resolve()).path)
+    """Validate a user-typed skill name; return the form stored on the session."""
     resolve(ref, dirs)
     return ref
 
 
 def resolve(ref, dirs=None):
-    if _is_path(ref):
-        return load(ref)
-    for base in dirs if dirs is not None else config.skills_dirs():
-        path = base / ref / FILENAME
-        if path.is_file():
-            return load(path)
+    """The skill a name stands for, searching the libraries in order. A name is one folder's
+    name, never a path."""
+    ref = str(ref)
+    if ref and "/" not in ref and not ref.startswith("."):
+        for base in dirs if dirs is not None else config.skills_dirs():
+            path = base / ref / FILENAME
+            if path.is_file():
+                return load(path)
     available = ", ".join(sorted(discover(dirs))) or "none"
-    raise SkillError(f"no skill named '{ref}' (available: {available})")
+    raise SkillError(f"no skill named '{label(ref)}' (available: {available})")
 
 
 def compose_system(system, refs, dirs=None):

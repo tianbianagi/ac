@@ -46,26 +46,25 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual(found["haiku"].body, "from first")
         self.assertEqual(found["brief"].description, "Be brief")
 
-    def test_resolve_by_name_and_path(self):
+    def test_resolve_by_name_only(self):
         path = write_skill(self.first, "haiku")
         self.assertEqual(skills.resolve("haiku", self.dirs).path, path)
-        self.assertEqual(skills.resolve(str(path), self.dirs).name, "haiku")
-        self.assertEqual(skills.resolve(str(path.parent), self.dirs).path, path)  # a folder works
         with self.assertRaisesRegex(skills.SkillError, "available: haiku"):
             skills.resolve("nope", self.dirs)
-
-    def test_normalize_ref(self):
-        path = write_skill(self.first, "haiku")
-        self.assertEqual(skills.normalize_ref("haiku", self.dirs), "haiku")
-        self.assertEqual(skills.normalize_ref(str(path.parent), self.dirs), str(path))
+        # A path is never a skill, whatever it points at: only the libraries are read.
         loose = self.root / "loose.md"
         loose.write_text("no frontmatter here")
-        self.assertEqual(skills.normalize_ref(str(loose), self.dirs), str(loose))
-        self.assertEqual(skills.resolve(str(loose)).name, "loose")
-        with self.assertRaises(skills.SkillError):
-            skills.normalize_ref("nope", self.dirs)
-        with self.assertRaises(skills.SkillError):
-            skills.normalize_ref(str(self.root / "missing.md"), self.dirs)
+        for ref in (str(path), str(path.parent), str(loose), "../first/haiku", "./haiku", "~/x"):
+            with self.assertRaises(skills.SkillError, msg=ref):
+                skills.resolve(ref, self.dirs)
+            with self.assertRaises(skills.SkillError, msg=ref):
+                skills.normalize_ref(ref, self.dirs)
+        self.assertEqual(skills.normalize_ref("haiku", self.dirs), "haiku")
+
+    def test_label(self):
+        self.assertEqual(skills.label("haiku"), "haiku")
+        self.assertEqual(skills.label("/old/skills/haiku/SKILL.md"), "haiku")   # stored before
+        self.assertEqual(skills.label("/old/notes/style.md"), "style")
 
     def test_compose_nothing_is_none(self):
         self.assertEqual(skills.compose_system(None, [], self.dirs), (None, [], []))
@@ -81,6 +80,11 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual([s.name for s in active], ["haiku", "brief"])
         self.assertEqual(missing, ["gone"])
         self.assertNotIn("description", prompt)
+        # A session from before may still name a skill by path: it is missing now, never read.
+        secret = self.root / "secret.md"
+        secret.write_text("private")
+        prompt, _, missing = skills.compose_system(None, [str(secret)], self.dirs)
+        self.assertEqual((prompt, missing), (None, [str(secret)]))
 
     def test_edits_apply_live_and_change_sha(self):
         path = write_skill(self.first, "haiku", body="v1")

@@ -7,7 +7,6 @@ import threading
 import unittest
 from pathlib import Path
 from unittest import mock
-from urllib.parse import quote
 
 from ac import server
 from ac.ollama import Client
@@ -23,8 +22,7 @@ class ServerTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.db = Path(tmp.name) / "ac.db"
         env = mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(Path(tmp.name) / "config"),
-                                           "AC_SKILLS_PATH": str(Path(tmp.name) / "skills"),
-                                           "AC_UPLOADS_DIR": str(Path(tmp.name) / "uploads")})
+                                           "AC_SKILLS_PATH": str(Path(tmp.name) / "skills")})
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("AC_MODEL", None)
@@ -100,8 +98,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(body["session"]["id"], self.lisbon.id)
         user, reply = body["messages"]
         self.assertEqual(user["attachments"],
-                         [{"id": 1, "path": "/tmp/notes.md", "kind": "text", "note": None,
-                           "size": 2, "real": os.path.realpath("/tmp/notes.md")}])
+                         [{"id": 1, "path": "/tmp/notes.md", "kind": "text", "note": None, "size": 2}])
         self.assertEqual((reply["role"], reply["content"], reply["thinking"]),
                          ("assistant", "**Day 1**: Alfama", "hmm"))
 
@@ -124,7 +121,6 @@ class ServerTest(unittest.TestCase):
             'user_name = "Sam"\n[users.huiwen]\nassistant_name = "Codi"\n')
         write_skill(config_dir / "skills", "shared")
         write_skill(config_dir / "users" / "huiwen" / "skills", "hers", body="Hers only.")
-        self.store.set_resource(self.soup.id, "notes", ["/tmp/notes.md"])
         her = {"X-Acc-User": "Huiwen"}
 
         _, body = self.get("/api/sessions", headers=her)
@@ -133,11 +129,10 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.post(f"/api/sessions/{self.lisbon.id}", {"title": "x"}, her)[0], 404)
         self.assertEqual(self.delete(f"/api/sessions/{self.lisbon.id}", her)[0], 404)
         self.assertEqual(self.delete("/api/attachments/1", her)[0], 404)
-        self.assertEqual(self.get(f"/api/names?session={self.soup.id}", headers=her)[0], 404)
-        self.assertEqual(self.post("/api/tags", {"session": self.soup.id, "path": "/tmp",
-                                                 "tag": "x"}, her)[0], 404)
         self.assertEqual(self.get("/api/config", headers=her)[1],
-                         {"names": {"user": "Huiwen", "assistant": "Codi"}, "user": "huiwen"})
+                         {"names": {"user": "Huiwen", "assistant": "Codi"}, "user": "huiwen",
+                          "owner": False})
+        self.assertTrue(self.get("/api/config")[1]["owner"])
         self.assertEqual([s["name"] for s in self.get("/api/skills", headers=her)[1]["skills"]],
                          ["hers", "shared"])
         self.assertEqual([s["name"] for s in self.get("/api/skills")[1]["skills"]], ["shared"])
@@ -242,13 +237,26 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([m.content for m in self.store.messages(session["id"])],
                          ["Hi there", "Hello!"])
 
-    def test_chat_attaches_files_the_message_names(self):
+    def test_nothing_on_this_machine_is_read(self):
+        # A path in a message is just words, and no request names a file here: files reach a
+        # conversation only as part of a message (see test_uploaded_files_go_with_the_message).
         notes = Path(self.db).parent / "notes.txt"
         notes.write_text("buy leeks")
         self.fake.reply("Noted.")
-        _, events = self.post("/api/chat", {"session": self.soup.id, "text": f"see {notes}"})
-        self.assertTrue(any(e["type"] == "note" and "notes.txt" in e["text"] for e in events))
-        self.assertIn("buy leeks", self.fake.requests[-1]["messages"][-1]["content"])
+        _, events = self.post("/api/chat", {"session": self.soup.id, "text": f"see {notes} and ~/.ssh/id_ed25519",
+                                            "paths": [str(notes)], "queue": [{"path": str(notes)}],
+                                            "tags": {"n": [str(notes)]}})
+        self.assertEqual([e["type"] for e in events if e["type"] == "note"], [])
+        self.assertEqual(next(e["message"] for e in events if e["type"] == "message")["attachments"], [])
+        self.assertNotIn("buy leeks", json.dumps(self.fake.requests[-1]))
+        for path in ("/api/browse?dir=/", f"/api/match?path={notes}", f"/api/names?session={self.soup.id}"):
+            self.assertEqual(self.get(path)[0], 404, path)
+        self.assertEqual(self.post("/api/tags", {"session": self.soup.id, "path": str(notes), "tag": "n"})[0], 404)
+        # Nor does a skill named by path get read.
+        status, body = self.post(f"/api/sessions/{self.soup.id}", {"skills": [str(notes)]})
+        self.assertEqual(status, 400)
+        self.assertIn("no skill named 'notes'", body["error"])
+        self.assertEqual(self.post("/api/chat", {"text": "hi", "model": "m1", "skills": [str(notes)]})[0], 400)
 
     def test_a_failed_reply_is_reported_and_can_be_retried(self):
         self.fake.scripts.append([("content", "half"), ("error", "out of memory")])
@@ -358,10 +366,12 @@ class ServerTest(unittest.TestCase):
             "session": self.soup.id, "text": "Look",
             "files": [self.upload("recipe.txt", b"leeks, butter"),
                       self.upload("../../photo.png", png),
-                      self.upload("recipe.txt", b"second copy")]})
+                      self.upload("recipe.txt", b"second copy"), self.upload("..", b"dots"),
+                      self.upload("", b"nameless")]})
         user = next(e["message"] for e in events if e["type"] == "message")
         self.assertEqual([(a["path"], a["kind"]) for a in user["attachments"]],
-                         [("recipe.txt", "text"), ("photo.png", "image"), ("recipe.txt", "text")])
+                         [("recipe.txt", "text"), ("photo.png", "image"), ("recipe.txt", "text"),
+                          ("file-4", "text"), ("file-5", "text")])
         sent = self.fake.requests[-1]["messages"][-1]
         self.assertIn('<file path="recipe.txt">\nleeks, butter\n</file>', sent["content"])
         self.assertIn("second copy", sent["content"])
@@ -392,9 +402,12 @@ class ServerTest(unittest.TestCase):
             "files": [self.upload("blob.bin", b"\0\1\2")]})
         notes = [e["text"] for e in events if e["type"] == "note"]
         self.assertIn("blob.bin isn't text, a PDF or an image, so it can't be attached", notes)
-        self.assertEqual(self.post("/api/chat", {"session": self.soup.id, "text": "hi",
+        before = len(self.store.list())       # a broken file is refused before anything is kept
+        self.assertEqual(self.post("/api/chat", {"text": "hi", "model": "m1",
                                                  "files": [{"name": "x", "data": "!!"}]}),
                          (400, {"error": "x didn't arrive intact"}))
+        self.assertEqual(self.post("/api/chat", {"text": "hi", "files": [1]})[0], 400)
+        self.assertEqual(len(self.store.list()), before)
 
     def test_models_and_skills(self):
         _, body = self.get("/api/models")
@@ -446,13 +459,23 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.get("/api/skills/shared/nope")[0], 404)
         self.assertEqual(self.get("/api/skills/personal/..")[0], 404)
 
-        status, body = self.delete("/api/skills/shared/terse", hers)       # shared: anyone may
+        # Only the owner changes what everyone shares: nothing she writes reaches my prompts.
+        self.assertEqual(self.delete("/api/skills/shared/terse", hers)[0], 403)
+        self.assertEqual(self.post("/api/skills", {"scope": "shared", "name": "terse", "body": "Mine now."},
+                                   hers)[0], 403)
+        self.assertEqual(self.post("/api/skills", {"scope": "personal", "name": "taken", "body": "x",
+                                                   "was": {"scope": "shared", "name": "terse"}}, hers)[0], 403)
+        self.assertEqual(self.get("/api/skills/shared/terse", headers=hers)[1]["body"], "Be terse.")
+        self.assertEqual(self.post("/api/skills", {"scope": "personal", "name": "own", "body": "Hers."},
+                                   hers)[0], 200)
+        status, body = self.delete("/api/skills/shared/terse")
         self.assertEqual((status, body["deleted"]), (200, "terse"))
         self.assertEqual((shared / "terse" / "notes.txt").read_text(), "kept")
         self.assertFalse((shared / "terse" / "SKILL.md").exists())
         self.assertEqual(self.delete("/api/skills/personal/terse", hers)[0], 404)   # not hers
         self.assertEqual(self.delete("/api/skills/personal/terse")[0], 200)
         self.assertFalse((mine / "terse").exists())
+        self.assertEqual(self.delete("/api/skills/personal/own", hers)[0], 200)
 
     def test_change_a_sessions_model_and_skills(self):
         write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku")
@@ -519,242 +542,13 @@ class ServerTest(unittest.TestCase):
                          (400, {"error": "nothing to export: this session has no messages yet"}))
 
 
-    # -- files on the server ---------------------------------------------------
-
-    def tree(self):
-        root = (Path(self.db).parent / "project").resolve()
-        (root / "src" / "deep").mkdir(parents=True)
-        (root / "src" / "app.py").write_text("print('hi')\n")
-        (root / "src" / "deep" / "util.py").write_text("def f(): pass\n")
-        (root / "src" / ".secret").write_text("hidden\n")
-        (root / "node_modules").mkdir()
-        (root / "notes.md").write_text("# notes\n")
-        (root / ".hidden").mkdir()
-        return root
-
-    def test_browse_a_folder(self):
-        root = self.tree()
-        status, body = self.get(f"/api/browse?dir={root}")
-        self.assertEqual(status, 200)
-        self.assertEqual((body["dir"], body["parent"]), (str(root), str(root.parent)))
-        self.assertEqual([(e["name"], e["dir"], e["size"]) for e in body["entries"]],
-                         [("src", True, None), ("notes.md", False, 8)])
-        _, body = self.get("/api/browse")
-        self.assertEqual(body["dir"], str(Path.home().resolve()))
-        self.assertEqual(self.get(f"/api/browse?dir={root}/notes.md")[0], 404)
-        # Unnamed, it opens at each user's start_dir; one that has gone falls back to home.
-        config_dir = Path(os.environ["AC_CONFIG_DIR"])
-        config_dir.mkdir()
-        (config_dir / "config.toml").write_text(
-            f'start_dir = "{root}"\n[users.hagi]\nstart_dir = "{root}/src"\n')
-        self.assertEqual(self.get("/api/browse")[1]["dir"], str(root))
-        self.assertEqual(self.get("/api/browse", headers={"X-Acc-User": "hagi"})[1]["dir"],
-                         str(root / "src"))
-        (config_dir / "config.toml").write_text(f'start_dir = "{root}/gone"\n')
-        self.assertEqual(self.get("/api/browse")[1]["dir"], str(Path.home().resolve()))
-        # A folder reached through a symlink keeps the name it was reached by.
-        link = root.parent / "shortcut"
-        link.symlink_to(root)
-        _, body = self.get(f"/api/browse?dir={link}")
-        self.assertEqual((body["dir"], body["entries"][0]["path"]), (str(link), str(link / "src")))
-
-    def test_match_says_what_an_entry_covers(self):
-        root = self.tree()
-        self.store.set_resource(self.soup.id, "proj",
-                                [str(root / "notes.md"), str(root / "src" / "app.py")])
-        _, body = self.get(f"/api/match?path={root}/src/")
-        self.assertEqual({k: body[k] for k in ("kind", "count", "size", "path", "real")},
-                         {"kind": "folder", "count": 2, "size": 26, "path": str(root / "src"),
-                          "real": str(root / "src")})
-        self.assertEqual(body["covers"], [str(root / "src" / "app.py"),
-                                          str(root / "src" / "deep" / "util.py")])
-        _, body = self.get(f"/api/match?path={root}/**/*.py")
-        self.assertEqual((body["kind"], body["count"], body["real"]), ("pattern", 2, None))
-        _, body = self.get(f"/api/match?path={root}/notes.md")
-        self.assertEqual((body["kind"], body["count"], body["size"]), ("file", 1, 8))
-        self.assertEqual(self.get(f"/api/match?path=@proj&session={self.soup.id}")[1]["kind"],
-                         "name")
-        self.assertEqual(self.get(f"/api/match?path=@proj&session={self.lisbon.id}")[0], 404)
-        status, body = self.get(f"/api/match?path={root}/nope.txt")
-        self.assertEqual((status, body["error"]), (404, f"nothing matches {root}/nope.txt"))
-        _, body = self.get(f"/api/names?session={self.soup.id}")
-        self.assertEqual(body["names"][0]["name"], "proj")
-        self.assertEqual(self.get(f"/api/names?session={self.lisbon.id}")[1], {"names": []})
-
-    def test_tags_name_files_one_at_a_time(self):
-        root = self.tree()
-        notes, app = str(root / "notes.md"), str(root / "src" / "app.py")
-        soup = {"session": self.soup.id}
-        status, body = self.post("/api/tags", {**soup, "path": notes, "tag": "@Plan"})
-        self.assertEqual((status, body["tag"], body["paths"]), (200, "plan", [notes]))
-        self.post("/api/tags", {**soup, "path": app, "tag": "plan"})
-        self.post("/api/tags", {**soup, "path": notes, "tag": "plan"})     # once is enough
-        self.assertEqual(self.store.resources(self.soup.id)["plan"], [notes, app])
-        self.assertEqual(self.store.resources(self.lisbon.id), {})    # only in that session
-        _, body = self.get(f"/api/names?session={self.soup.id}")
-        self.assertEqual(body["names"][0]["real"], [os.path.realpath(notes), os.path.realpath(app)])
-
-        status, body = self.post("/api/tags", {**soup, "path": str(root / "nope.md"), "tag": "plan"})
-        self.assertEqual((status, body["error"]), (400, f"nothing matches {root}/nope.md"))
-        self.assertEqual(self.post("/api/tags", {**soup, "path": "upload.png", "tag": "plan"})[0], 400)
-        self.assertEqual(self.post("/api/tags", {**soup, "path": notes, "tag": "two words"})[0], 400)
-        self.assertEqual(self.post("/api/tags", {"session": "zzzz", "path": notes, "tag": "x"})[0], 404)
-
-        link = root.parent / "shortcut"          # untagging finds the file however it's reached
-        link.symlink_to(root)
-        self.post("/api/tags", {**soup, "path": str(link / "notes.md"), "tag": "plan", "remove": True})
-        self.assertEqual(self.store.resources(self.soup.id)["plan"], [app])
-        self.post("/api/tags", {**soup, "path": app, "tag": "plan", "remove": True})
-        self.assertNotIn("plan", self.store.resources(self.soup.id))  # no files left: the tag goes
-        self.assertTrue((root / "notes.md").exists())
-
-    def test_uploads_are_kept_when_tagged(self):
-        uploads = Path(os.environ["AC_UPLOADS_DIR"]) / self.store.user     # each user their own
-        data = base64.b64encode(b"ship on friday").decode()
-        soup = {"session": self.soup.id}
-        status, body = self.post("/api/tags", {**soup, "upload": {"name": "../plan.md", "data": data},
-                                               "tag": "plan"})
-        kept = uploads / "plan.md"                  # its own name, never a path
-        self.assertEqual((status, kept.read_text()), (200, "ship on friday"))
-        self.assertEqual((body["path"], self.store.resources(self.soup.id)["plan"]),
-                         (os.path.realpath(kept), [str(kept)]))
-        self.post("/api/tags", {**soup, "upload": {"name": "plan.md", "data": data}, "tag": "work"})
-        self.assertEqual(len(list(uploads.iterdir())), 1)       # the same bytes: the same copy
-        other = base64.b64encode(b"ship on monday").decode()
-        _, body = self.post("/api/tags", {**soup, "upload": {"name": "plan.md", "data": other},
-                                          "tag": "plan"})
-        self.assertEqual(Path(body["path"]).name, "plan 2.md")
-
-        # Already sent: kept as the conversation holds it, and the conversation told where.
-        session = self.store.draft("m1")
-        self.store.save(session)
-        self.store.add_message(session.id, "user", "read these", attachments=[
-            Attachment("report.pdf", "text", content="[page 1]\nprofits up"),
-            Attachment("pic.png", "image", data=b"\x89PNG")])
-        text, pic = self.store.messages(session.id)[0].attachments
-        _, body = self.post("/api/tags", {"session": session.id, "attachment": text.id, "tag": "q3"})
-        self.assertEqual(Path(body["path"]).name, "report.pdf.txt")
-        self.assertEqual(Path(body["path"]).read_text(), "[page 1]\nprofits up")
-        self.assertEqual(self.store.attachment(text.id).path, str(uploads / "report.pdf.txt"))
-        _, body = self.post("/api/tags", {"session": session.id, "attachment": pic.id, "tag": "q3"})
-        self.assertEqual(Path(body["path"]).read_bytes(), b"\x89PNG")
-        self.assertEqual(self.store.resources(session.id), {"q3": [
-            str(uploads / "report.pdf.txt"), str(uploads / "pic.png")]})
-        self.assertEqual(self.post("/api/tags", {**soup, "attachment": 999, "tag": "q3"})[0], 400)
-
-    def test_a_kept_upload_cleaned_up_since_is_kept_again_when_tagged(self):
-        uploads = Path(os.environ["AC_UPLOADS_DIR"]) / self.store.user
-        session = self.store.save(self.store.draft("m1"))
-        self.store.add_message(session.id, "user", "read this", attachments=[
-            Attachment("report.pdf", "text", content="[page 1]\nprofits up")])
-        (a,) = self.store.messages(session.id)[0].attachments
-        _, body = self.post("/api/tags", {"session": session.id, "attachment": a.id, "tag": "q3"})
-        kept = uploads / "report.pdf.txt"
-        self.assertEqual(self.store.attachment(a.id).path, str(kept))
-        kept.unlink()                                               # acc uploads --clean
-        status, body = self.post("/api/tags", {"session": session.id, "attachment": a.id,
-                                               "tag": "q4"})
-        self.assertEqual((status, kept.read_text()), (200, "[page 1]\nprofits up"))
-        self.assertEqual(self.store.attachment(a.id).path, str(kept))
-
-        # A file of the user's own that has gone is not brought back: it was never ours to keep.
-        self.store.add_message(session.id, "user", "and this", attachments=[
-            Attachment("/nowhere/notes.md", "text", content="x")])
-        b = self.store.messages(session.id)[1].attachments[0]
-        status, body = self.post("/api/tags", {"session": session.id, "attachment": b.id, "tag": "x"})
-        self.assertEqual((status, body["error"]), (400, "nothing matches /nowhere/notes.md"))
-
-    def test_a_new_chat_keeps_its_tags_until_the_first_message(self):
-        root = self.tree()
-        notes = str(root / "notes.md")
-        status, body = self.post("/api/tags", {"path": notes, "tag": "plan"})     # no session yet
-        self.assertEqual((status, body), (200, {"tag": "plan", "path": os.path.realpath(notes),
-                                               "portable": notes}))
-        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM resources").fetchone()[0], 0)
-        tags = quote(json.dumps({"plan": [notes]}))
-        _, body = self.get(f"/api/names?tags={tags}")
-        self.assertEqual(body["names"][0]["real"], [os.path.realpath(notes)])
-        self.assertEqual(self.get(f"/api/match?path=@plan&tags={tags}")[1]["count"], 1)
-        self.assertEqual(self.get("/api/names?tags=[1]")[0], 400)
-
-        self.fake.reply("Friday.")
-        _, events = self.post("/api/chat", {"text": "when, per @plan ?", "model": "m1",
-                                            "tags": {"plan": [notes]}})
-        session = next(e["session"] for e in events if e["type"] == "session")
-        user = next(e["message"] for e in events if e["type"] == "message")
-        self.assertEqual([a["path"] for a in user["attachments"]], [notes])
-        self.assertEqual(self.store.resources(session["id"]), {"plan": [notes]})
-        self.assertEqual(self.post("/api/chat", {"text": "hi", "tags": {"a b": [notes]}})[0], 400)
-
-    def test_queued_files_keep_the_order_they_were_queued_in(self):
-        root = self.tree()
-        self.fake.reply("Seen.")
-        _, events = self.post("/api/chat", {"session": self.soup.id, "text": "Review", "queue": [
-            {"path": str(root / "notes.md")}, {"upload": self.upload("a.txt", b"first upload")},
-            {"path": str(root / "src")}, {"upload": self.upload("b.txt", b"second upload")}]})
-        user = next(e["message"] for e in events if e["type"] == "message")
-        self.assertEqual([a["path"] for a in user["attachments"]],
-                         [str(root / "notes.md"), "a.txt", str(root / "src" / "app.py"),
-                          str(root / "src" / "deep" / "util.py"), "b.txt"])
-        _, body = self.get(f"/api/sessions/{self.soup.id}")        # and so it stays
-        self.assertEqual([a["path"] for a in body["messages"][-2]["attachments"]],
-                         [a["path"] for a in user["attachments"]])
-
-        before = len(self.store.list())       # a broken upload is refused before anything is kept
-        self.assertEqual(self.post("/api/chat", {"text": "hi", "model": "m1", "queue": [
-            {"path": str(root / "notes.md")}, {"upload": {"name": "x", "data": "!!"}}]}),
-                         (400, {"error": "x didn't arrive intact"}))
-        self.assertEqual(self.post("/api/chat", {"text": "hi", "queue": [{"what": 1}]})[0], 400)
-        self.assertEqual(len(self.store.list()), before)
-
-    def test_a_folder_typed_and_the_same_folder_browsed_agree(self):
-        # However a file is reached, through a symlink or not, the picker sees one place.
-        root = self.tree()
-        link = root.parent / "shortcut"
-        link.symlink_to(root)
-        _, browsed = self.get(f"/api/browse?dir={link}")
-        _, typed = self.get(f"/api/match?path={root}/src")
-        src = next(e for e in browsed["entries"] if e["name"] == "src")
-        self.assertEqual(src["path"], str(link / "src"))
-        self.assertEqual(src["real"], typed["real"])
-        _, typed = self.get(f"/api/match?path={link}/notes.md")
-        notes = next(e for e in browsed["entries"] if e["name"] == "notes.md")
-        self.assertEqual(notes["real"], typed["real"])
-
-    def test_picked_server_files_go_with_the_message(self):
-        root = self.tree()
-        self.fake.reply("Seen.")
-        _, events = self.post("/api/chat", {
-            "session": self.soup.id, "text": "Review",
-            "paths": [str(root / "src"), str(root / "notes.md"), str(root / "gone.txt")]})
-        user = next(e["message"] for e in events if e["type"] == "message")
-        self.assertEqual([a["path"] for a in user["attachments"]],
-                         [str(root / "src" / "app.py"), str(root / "src" / "deep" / "util.py"),
-                          str(root / "notes.md")])
-        notes = [e["text"] for e in events if e["type"] == "note"]
-        self.assertIn(f"nothing matches {root}/gone.txt", notes)
-        self.assertTrue(any(n.startswith("attached 2 files from ") and "/src/" in n for n in notes), notes)
-        sent = self.fake.requests[-1]["messages"][-1]["content"]
-        self.assertIn("print('hi')", sent)
-        self.assertNotIn("hidden", sent)
-        # Naming a picked file in the text too doesn't send it twice.
-        self.fake.reply("ok")
-        _, events = self.post("/api/chat", {"session": self.soup.id, "text": f"again {root}/notes.md",
-                                            "paths": [str(root / "notes.md")]})
-        user = next(e["message"] for e in events if e["type"] == "message")
-        self.assertEqual(len(user["attachments"]), 1)
-
-
     def test_remove_a_file_from_the_conversation(self):
-        notes = Path(self.db).parent / "notes.txt"
-        notes.write_text("buy leeks")
         self.fake.reply("Noted.")
         _, events = self.post("/api/chat", {"session": self.soup.id, "text": "see",
-                                            "paths": [str(notes)]})
+                                            "files": [self.upload("notes.txt", b"buy leeks")]})
         attachment = next(e["message"] for e in events if e["type"] == "message")["attachments"][0]
         self.assertEqual(self.delete(f"/api/attachments/{attachment['id']}"),
                          (200, {"deleted": attachment["id"]}))
-        self.assertTrue(notes.exists())                  # only the conversation's copy goes
         self.assertEqual(self.delete(f"/api/attachments/{attachment['id']}")[0], 404)
         self.assertEqual(self.delete("/api/attachments/nope")[0], 404)
         messages = self.store.messages(self.soup.id)

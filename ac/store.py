@@ -1,7 +1,6 @@
 """SQLite persistence for sessions and messages."""
 
 import json
-import os
 import secrets
 import sqlite3
 from dataclasses import dataclass, field
@@ -77,8 +76,8 @@ CREATE INDEX attachments_message ON attachments(message_id);
 # Who wrote the title: "auto" (the first message), "model" or "user".
 TITLE_SOURCE_SCHEMA = "ALTER TABLE sessions ADD COLUMN title_source TEXT;"
 
-# Names the user gave to paths, usable from every session as @NAME.
-# path holds a JSON list; a row from before names could hold several paths is one bare path.
+# History: names (later tags) the user gave to paths on this machine. Gone since files only
+# come with a message; the tables are dropped by DROP_RESOURCES_SCHEMA below.
 RESOURCES_SCHEMA = """
 CREATE TABLE resources (
     name       TEXT PRIMARY KEY,
@@ -90,7 +89,7 @@ CREATE TABLE resources (
 # When a session was archived: out of the lists, kept whole, and back with a new message.
 ARCHIVED_SCHEMA = "ALTER TABLE sessions ADD COLUMN archived_at TEXT;"
 
-# Whose each session and name is: acc can serve several people, who never see each other's.
+# Whose each session is: acc can serve several people, who never see each other's.
 # What was there before belongs to the owner (filled in by _backfill_owner).
 OWNER_SCHEMA = """
 ALTER TABLE sessions ADD COLUMN owner TEXT NOT NULL DEFAULT '';
@@ -107,8 +106,6 @@ DROP TABLE resources;
 ALTER TABLE owned_resources RENAME TO resources;
 """
 
-# Names belong to one session: @NAME means what that conversation named. A name from before is
-# given to every session of the user who made it, so none of them loses one.
 SESSION_RESOURCES_SCHEMA = """
 CREATE TABLE session_resources (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -123,8 +120,6 @@ DROP TABLE resources;
 ALTER TABLE session_resources RENAME TO resources;
 """
 
-# When a tag last let go of a file (untagged, the tag changed, its session deleted), by where the
-# file really is: an uploaded file no tag holds is cleaned up only once it has been let go a while.
 RELEASED_SCHEMA = """
 CREATE TABLE released (
     path TEXT PRIMARY KEY,
@@ -132,9 +127,15 @@ CREATE TABLE released (
 );
 """
 
+# Files come only with a message now, so nothing on this machine is named or kept for later.
+DROP_RESOURCES_SCHEMA = """
+DROP TABLE resources;
+DROP TABLE released;
+"""
+
 # MIGRATIONS[n] upgrades a database from user_version n to n + 1.
 MIGRATIONS = [SCHEMA, ATTACHMENTS_SCHEMA, TITLE_SOURCE_SCHEMA, RESOURCES_SCHEMA, ARCHIVED_SCHEMA,
-              OWNER_SCHEMA, SESSION_RESOURCES_SCHEMA, RELEASED_SCHEMA]
+              OWNER_SCHEMA, SESSION_RESOURCES_SCHEMA, RELEASED_SCHEMA, DROP_RESOURCES_SCHEMA]
 
 
 class StoreError(Exception):
@@ -176,7 +177,6 @@ class Attachment:
     content: str | None = None
     data: bytes | None = None
     note: str | None = None
-    group: str | None = None    # the pattern that brought it in (src/**); not stored
     id: int | None = field(default=None, compare=False)  # its row, once it has been saved
 
     @property
@@ -380,9 +380,6 @@ class Store:
 
     def delete(self, session_id):
         with self.db:
-            if self.db.execute("SELECT 1 FROM sessions WHERE id = ? AND owner = ?",
-                               (session_id, self.user)).fetchone():
-                self._release(p for paths in self.resources(session_id).values() for p in paths)
             self.db.execute("DELETE FROM sessions WHERE id = ? AND owner = ?",
                             (session_id, self.user))
 
@@ -415,54 +412,7 @@ class Store:
                    JOIN messages copy ON copy.session_id = ? AND copy.seq = orig.seq
                    WHERE orig.session_id = ? AND orig.seq <= ?""",
                 (new.id, src.id, at_seq))
-            self.db.execute(
-                """INSERT INTO resources (session_id, name, path, created_at)
-                   SELECT ?, name, path, created_at FROM resources WHERE session_id = ?""",
-                (new.id, src.id))
         return self.get(new.id)
-
-    # -- named paths ------------------------------------------------------
-
-    def resources(self, session_id):
-        """{name: [paths]} for every name given in one session (None: a draft, which has none),
-        oldest name first."""
-        rows = self.db.execute(
-            "SELECT name, path FROM resources WHERE session_id = ? ORDER BY created_at, rowid",
-            (session_id,))
-        return {r["name"]: json.loads(r["path"]) if r["path"].startswith("[") else [r["path"]]
-                for r in rows}  # stored paths are absolute, so only a list starts with "["
-
-    def set_resource(self, session_id, name, paths):
-        with self.db:
-            kept = {os.path.realpath(p) for p in paths}
-            self._release(p for p in self.resources(session_id).get(name, [])
-                          if os.path.realpath(p) not in kept)
-            self.db.execute(
-                """INSERT INTO resources (session_id, name, path, created_at) VALUES (?, ?, ?, ?)
-                   ON CONFLICT(session_id, name) DO UPDATE SET path = excluded.path""",
-                (session_id, name, json.dumps(list(paths)), _now()))
-
-    def delete_resource(self, session_id, name):
-        with self.db:
-            self._release(self.resources(session_id).get(name, []))
-            return self.db.execute("DELETE FROM resources WHERE session_id = ? AND name = ?",
-                                   (session_id, name)).rowcount > 0
-
-    def _release(self, paths):
-        """Note that a tag has let go of these files, now."""
-        now = _now()
-        self.db.executemany("INSERT OR REPLACE INTO released (path, at) VALUES (?, ?)",
-                            [(os.path.realpath(p), now) for p in paths])
-
-    def tagged_everywhere(self):
-        """Where every file some tag holds really is, in every session of every user: what
-        cleaning up uploads must leave alone, whoever runs it."""
-        return {os.path.realpath(p) for (raw,) in self.db.execute("SELECT path FROM resources")
-                for p in (json.loads(raw) if raw.startswith("[") else [raw])}
-
-    def released(self):
-        """{where a file really is: when a tag last let go of it}."""
-        return {r["path"]: r["at"] for r in self.db.execute("SELECT path, at FROM released")}
 
     # -- messages ---------------------------------------------------------
 
@@ -517,11 +467,6 @@ class Store:
             raise NotFound(f"no attachment {attachment_id}")
         return Attachment(path=row["path"], kind=row["kind"], content=row["content"],
                           data=row["data"], note=row["note"], id=row["id"])
-
-    def move_attachment(self, attachment_id, path):
-        """Say where an attached file now lives, as when an upload is kept on this machine."""
-        with self.db:
-            self.db.execute("UPDATE attachments SET path = ? WHERE id = ?", (str(path), attachment_id))
 
     def delete_attachment(self, attachment_id):
         """Take one file out of a conversation. The message it came with stays."""

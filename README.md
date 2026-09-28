@@ -25,7 +25,7 @@ text keeps its line breaks. Replies stream in rendered as markdown, with reasoni
 **Stop** keeps the partial reply, and **Retry** asks again after a reply failed
 or was stopped. A reply goes on being written when you close or reload the page, lose the
 connection or switch to another chat; opening its session again picks it up where it is (only
-restarting `acc serve` loses a reply still being written). A session takes one reply at a time. Attach files with the paperclip, which offers **From this device** (upload) and **From the server**, by dropping them on the chat, or by pasting an image; they are read as described under [Files](#files), and attached images show in the conversation. **From the server** picks files on the machine running `acc serve`, however you reach it: browse folders from your home, filter, and tick as many files as you like; ticking a folder takes everything in it, as `folder/**` would (hidden, ignored and binary files stay out). The box under the list holds everything queued, one path per line, and follows your ticks; edit it and press Enter to queue a path, a pattern such as `~/notes/**/*.md` or one of your `@names`, or delete a line to unqueue it. Paths named in a message are attached as well. The × on a sent file takes it out of the conversation, so the model stops seeing it from the next message on; the file itself is never touched. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
+restarting `acc serve` loses a reply still being written). A session takes one reply at a time. Attach files with the paperclip, by dropping them on the chat, or by pasting an image; they go with the message, are read as described under [Files](#files), and attached images show in the conversation. The × on a sent file takes it out of the conversation, so the model stops seeing it from the next message on. The model menu and **Skills** switch the session's model and skills, or set them for a new chat before its first message.
 The header, beside the session id, shows the context in use as a share of the model's window (Ollama's own figure while the model is loaded, otherwise marked ~ and taken from `num_ctx` or the model's maximum) (amber at 80%, red at 95%, when Ollama starts dropping the oldest messages) and how fast the latest reply came, counted live while it streams. The chevron at the header's right folds it to just the title, for more room on a phone; each browser remembers the choice. Hovering a message shows copy (the text as written, markdown for a reply) and delete, which takes just that message and its files out of the conversation. The pencil beside the title (or a double-click on it) renames the open session; the archive, export and delete icons at the top right act on it too. Archiving takes a session out of the list without deleting it: **Archived** at the bottom of the list shows those, a new message brings one back, and `acc ls --archived` lists them in the terminal, where `acc ls` leaves them out. Export
 downloads the session as `DATE TITLE.md`; it
 first has the model name a session that still carries its first message as its title. The app
@@ -39,14 +39,14 @@ To reach it from another device through a proxy of your own, add the name the pr
 `acc serve --allow-host acc.example.com`; the proxy must do the authenticating, since the server
 itself has no login.
 
-acc can serve more than one person, each with their own sessions, tags and skills; none of
+acc can serve more than one person, each with their own sessions and skills; none of
 them sees the others'. Add each extra user to `config.toml` as a `[users.NAME]` table (see
 [Configuration](#configuration)). The proxy says who is asking in an `X-Acc-User: NAME` header,
 typically taken from the client certificate it checked; a request without that header, such as
 from a browser on this machine, is yours (the owner, known by your login name), and one naming a
 user `config.toml` doesn't list is turned away. The terminal commands always act as the owner.
-Everyone can read the same files on this machine: users keep their conversations apart, not
-their files.
+Nothing anyone sends can read a file on this machine (see [Files](#files)), so a user gets
+their own conversations, the models, and the skills, and nothing else.
 
 The other commands work on the same sessions from the terminal:
 
@@ -63,60 +63,33 @@ acc ask --no-save "..."      # don't keep it as a session
 acc ask -S ID "..."          # ...or ask within an existing session
 
 acc skills [NAME]            acc models
-acc uploads [--clean] [--days N]   # uploads no tag needs any more; --clean trashes them
 ```
 
 A session is named by its id, a unique id prefix, or its exact title.
 
 ## Files
 
-Name a path in a message, in the browser or in `acc ask`, and its contents are sent along with
-it: `what does ~/notes/plan.md say about the budget?`
+A file reaches the model only as part of a message you send from the browser: attach it with
+the paperclip, drop it on the chat, or paste an image. The server reads it once, keeps its
+contents with that message, and writes nothing to disk. In the terminal, pipe a file's contents
+in where `-` stands: `acc ask "summarize this:" - < notes.md`.
 
-- A word is treated as a path when it **exists** and starts with `/` or `~`, or contains a `/`
-  (`./notes.md`, `src/main.py`). For a bare filename in the current directory, write `@notes.md`.
-  Paths with spaces work quoted (`"my file.txt"`) or escaped (`my\ file.txt`).
 - **Text files** are inlined (the first 256 KB of larger ones, and you're told when that happens).
   **Images** (png, jpg, webp, gif) go to models with vision; other models get a warning instead.
-  A **directory** becomes a listing of its entries. Other binary files are refused.
-- **A whole folder**: a path with a `*` in it is a pattern. `src/**` sends every file under
-  `src`, however deep; `docs/**/*.md` only the markdown; `@*.py` the Python files right here.
-  (A folder named *without* a star still sends just a listing of it, so mentioning `~/` in
-  passing can't pull in your home directory.) Left out automatically: hidden files and folders,
-  dependency and build folders (`node_modules`, `__pycache__`, `venv`, ...), anything your
-  `.gitignore` excludes, images, and files that aren't text. It stops at 200 files or 400 KB of
-  text (about 100k tokens; `max_attach_kb` in `config.toml` changes that) and tells you what it
-  left out. What you spell out is taken as meant, so `~/.config/ac/**` works although `.config`
-  is hidden.
-- **Tags.** Every file chip, queued or already sent, has a `#`: tap it and type a tag (Enter
-  saves, Esc cancels) to tag that file. A tag points at a file on the machine running
-  `acc serve`, so tagging a file uploaded from your device first keeps a copy of it in
-  `~/accspace/uploads/<user>` (`AC_UPLOADS_DIR` moves that); one already sent is kept as the model saw
-  it, so a PDF becomes its text. A tag belongs to the session it was made in: from then on
-  `@TAG` in any message of that session (from the browser or `acc ask -S`) attaches every file
-  with that tag, as it is at that moment, and other sessions don't see it. A forked session takes
-  its tags along; a new chat keeps its tags until its first message makes the session. A
-  file's tags show on its chip; tap one, then again to confirm, to untag it, and a tag with no
-  files left is forgotten (the files themselves are never touched). Tags are listed at the top of
-  the folder picker, where one can be queued like a file. A tag wins over a file of the same
-  name, and if one of its files has gone you are told and get the rest.
-- **Cleaning up uploads.** Nothing is cleaned up by itself. `acc uploads` lists the files in
-  the uploads folder (everyone's) that no tag in any session holds, and none has for 7 days
-  (`--days N`): since a tag last let go of it (untagged, the tag changed, its session deleted),
-  or since it was saved. `acc uploads --clean` moves them to the Trash. Conversations keep their
-  own copy of what was sent, and tagging a file whose kept copy was cleaned up keeps it again.
+  Other binary files are refused.
 - **PDFs** are read as text, page by page, with `[page N]` markers so the model can cite pages.
-  `report.pdf#10-20` (or `#7`) sends only those pages. A long PDF is cut at a page boundary
-  (about 256 KB of text, very roughly 60k tokens) and you're told how to ask for the rest. A
-  scanned PDF with no text layer is sent as images of its first 8 pages, for models with vision.
-  No PDF library is involved: on macOS the system's PDFKit does the work through `osascript`;
-  elsewhere `pdftotext` (poppler) is used if installed, and scans can't be rendered.
+  A long PDF is cut at a page boundary (about 256 KB of text, very roughly 60k tokens) and you're
+  told how much was sent. A scanned PDF with no text layer is sent as images of its first 8
+  pages, for models with vision. No PDF library is involved: on macOS the system's PDFKit does
+  the work through `osascript`; elsewhere `pdftotext` (poppler) is used if installed, and scans
+  can't be rendered.
 - The file is **snapshotted when you send the message** and stays in the conversation from then
   on, so later turns can refer to it and the history always matches what the model really saw.
-  Name the path again to send its current contents.
+  Send it again to send its current contents.
   Exports name the files that were attached but never include their contents.
-- This is not a tool the model can call. Only a path that *you* give is ever read: nothing in a
-  skill or in the model's output can make `acc` open a file.
+- Nothing names a path on the machine running `acc serve`: not a message (a path in one is just
+  words), not a skill, not the model's output. acc never opens a file it wasn't handed, so
+  someone reaching it through a proxy can read their own conversations and nothing else.
 
 ## Skills
 
@@ -133,8 +106,10 @@ Put skills in `~/accspace/config/skills/<name>/SKILL.md` (see `examples/skills/`
 with `AC_SKILLS_PATH`. Skills there are everyone's; one user's own go in
 `~/accspace/config/users/<user>/skills/<name>/SKILL.md`, and win over a shared skill of that name.
 In the browser, **Skills → Manage skills…** makes, edits, renames and deletes both kinds, and moves
-a skill between just yours and everyone's. Attach them from **Skills** in the browser, or with `acc set ID --add-skill`
-and `acc ask -s`, by name or by path to any markdown file: `acc ask -s ./notes/style.md "..."`.
+a skill between just yours and everyone's; only the owner changes the shared ones, since they
+end up in everyone's prompts. Attach them from **Skills** in the browser, or with
+`acc set ID --add-skill NAME` and `acc ask -s NAME`. A skill is always named, never given by
+path: only the skill libraries are read.
 
 - Skills are **instructions only**. Nothing is executed and the model gets no tools.
 - The system prompt is rebuilt on every turn from the session's own system text plus its attached
@@ -161,13 +136,6 @@ and `acc ask -s`, by name or by path to any markdown file: `acc ask -s ./notes/s
 Personal settings live in `~/accspace/config/config.toml` (optional):
 
 ```toml
-# How much text a pattern such as src/** may attach to one message, in KB (default 400).
-max_attach_kb = 400
-
-# Where the browser's From the server picker opens (default home). Until the page is
-# reloaded it reopens wherever you left it.
-start_dir = "~/Documents"
-
 # What exports call the two sides of the conversation (default "User" and "Assistant").
 user_name = "Sam"
 assistant_name = "Robin"
@@ -198,7 +166,6 @@ are dropped, and if another session already owns the name, the session id is app
 | --- | --- | --- |
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
-| `AC_UPLOADS_DIR` | where uploads are kept once tagged, in a folder per user | `~/accspace/uploads` |
 | `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |

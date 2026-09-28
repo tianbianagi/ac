@@ -97,22 +97,6 @@ def user_settings(user=None):
     return chosen
 
 
-def uploads_dir(user=None):
-    """Where a file uploaded from the browser is kept once it is tagged: $AC_UPLOADS_DIR, else
-    ~/accspace/uploads, in a folder of the user's own. A tag needs a file on this machine to
-    point at."""
-    override = os.environ.get("AC_UPLOADS_DIR")
-    base = Path(override).expanduser() if override else Path.home() / "accspace" / "uploads"
-    return base / user if user else base
-
-
-def start_dir(user=None):
-    """Where the page's server picker opens before it remembers a folder: start_dir in
-    config.toml. None means home."""
-    raw = user_settings(user).get("start_dir")
-    return Path(str(raw)).expanduser() if raw else None
-
-
 def speaker_names(user=None):
     """What exports call each side of the conversation: user_name and assistant_name in
     config.toml. Display only: the model is never told these names."""
