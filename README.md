@@ -21,7 +21,9 @@ ln -s "$PWD/bin/acc" ~/.local/bin/acc     # or run ./bin/acc, or python3 -m ac
 `acc serve` opens the app in the browser at `http://127.0.0.1:8765/` (`--port N` picks another
 port, `--no-open` skips opening a window). The sidebar lists your sessions, with search (the ‹ at its bottom, or ⌘B / Ctrl+B, shrinks it to a rail of icons for new chat and search; › widens it again); the pencil
 starts a new chat with the default model. Enter sends and Shift-Enter starts a new line; pasted
-text keeps its line breaks. Replies stream in rendered as markdown, with reasoning folded away;
+text keeps its line breaks. Messages are markdown, yours as well as the model's: a sent message is
+rendered the way a reply is, and keeps its spacing (indented lines, aligned columns) even outside a code
+block. Replies stream in rendered as markdown, with reasoning folded away;
 **Stop** keeps the partial reply, and **Retry** asks again after a reply failed
 or was stopped. A reply goes on being written when you close or reload the page, lose the
 connection or switch to another chat; opening its session again picks it up where it is (only

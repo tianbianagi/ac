@@ -213,6 +213,9 @@ body.dragging #chat { outline: 2px dashed var(--accent); outline-offset: -8px; }
 .msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .msg .who .status { color: var(--warn); }
 .msg.user .body { background: var(--user); padding: 10px 14px; border-radius: 10px; }
+/* Typed text keeps its spacing (indented lines, aligned columns) even outside a code block;
+   only inside the blocks, so the newlines between them don't show as blank lines. */
+.msg.user .body :is(p, li, td, th) { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.system .body { color: var(--muted); font-style: italic; }
 .body > :first-child { margin-top: 0; } .body > :last-child { margin-bottom: 0; }
 .body p, .body ul, .body ol, .body pre, .body blockquote, .body table { margin: 0 0 .8em; }
@@ -864,9 +867,8 @@ function fileChip(a) {
 function renderMessage(m) {
   const who = m.role === "user" ? names.user : m.role === "assistant" ? names.assistant : m.role;
   const status = m.status !== "complete" ? el("span", { class: "status" }, ` · ${m.status}`) : null;
-  const body = m.role === "assistant"
-    ? el("div", { class: "body", html: markdown(m.content) })
-    : el("div", { class: "body plain" }, m.content);
+  // A message is markdown whoever wrote it: the model gets the text as typed, the page renders it.
+  const body = el("div", { class: "body", html: markdown(m.content) });
   const thinking = m.thinking
     ? el("details", { class: "thinking" }, el("summary", {}, "Thinking"), el("div", { class: "plain" }, m.thinking))
     : null;
