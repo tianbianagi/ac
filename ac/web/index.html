@@ -1415,7 +1415,7 @@ function offerRetry(messages) {
 }
 
 async function openSession(id) {
-  if (streaming) return;
+  leaveReply();                            // a reply this page follows goes on without it
   current = id;
   markCurrent();
   document.body.classList.toggle("reading", id !== null);
@@ -1431,14 +1431,14 @@ async function openSession(id) {
   }
   loadNames();
   try {
-    const { session, messages, usage } = await api("/sessions/" + encodeURIComponent(id));
+    const { session, messages, usage, replying } = await api("/sessions/" + encodeURIComponent(id));
     if (current !== id) return;
     showHeader(session);
     Object.assign(stats, { usage, speed: null, live: null });
     showStatus();
     chat().replaceChildren(...(messages.length ? messages.map(renderMessage)
                                                : [el("p", { class: "placeholder" }, "No messages yet.")]));
-    offerRetry(messages);
+    if (replying) follow(id); else offerRetry(messages);
     scrollDown(true);
   } catch (e) {
     $("#title").textContent = "";
@@ -1509,7 +1509,6 @@ function setStreaming(on) {
   $("#go").title = on ? "Stop" : "Send (Enter)";
   $("#go").setAttribute("aria-label", on ? "Stop" : "Send");
   $("#go").classList.toggle("primary", !on);
-  $("#new").disabled = !!on;
 }
 
 // A reply being written: thinking and text grow as they arrive, drawn at most once a frame.
@@ -1538,22 +1537,118 @@ function pendingReply() {
   };
 }
 
+// Replies are written on the server whether or not a page watches: leaving one only stops
+// following it, and opening its session again picks it up. `streaming` is the one this page
+// follows: { ctrl, stopped, stopSent, left }.
+function following() {
+  return { ctrl: new AbortController(), stopped: false, stopSent: false, left: false };
+}
+
+function leaveReply() {
+  if (!streaming) return;
+  streaming.left = true;
+  streaming.ctrl.abort();
+}
+
+function stopReply() {
+  if (!streaming || streaming.stopped) return;
+  streaming.stopped = true;
+  if (current) postStop(current);          // a new chat's is sent when its id arrives
+}
+
+function postStop(id) {
+  if (!streaming || streaming.stopSent) return;
+  streaming.stopSent = true;
+  fetch(`/api/sessions/${encodeURIComponent(id)}/stop`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }).catch(() => {});
+}
+
+// Draw a reply's events as they come. `st` says afterwards what arrived: the message sent
+// (sent), the reply as it grew (reply), and whether the reply reached its end (ended).
+async function readReply(res, st) {
+  const reader = res.body.getReader(), decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.type === "session") {
+        if (current !== event.session.id) {
+          if (!current) draft.tags = {};  // the new session has them now
+          current = event.session.id;
+          quietHash = true;
+          location.hash = current;
+          loadNames();
+        }
+        if (streaming?.stopped) postStop(current);
+        showHeader(event.session);
+        loadSessions();
+      } else if (event.type === "note") {
+        note(event.text);
+      } else if (event.type === "message" && event.message.role === "user") {
+        st.sent = true;
+        const saved = renderMessage(event.message);
+        if (st.early) { st.early.replaceWith(saved); st.early = null; } else chat().append(saved);
+        st.reply = pendingReply();
+        chat().append(st.reply.node);
+        scrollDown(true);
+      } else if (event.type === "thinking" || event.type === "content") {
+        if (!st.reply) { st.reply = pendingReply(); chat().append(st.reply.node); }
+        st.reply.add(event.type, event.text);
+        tick();
+      } else if (event.type === "message") {
+        const done = renderMessage(event.message);
+        if (st.reply) st.reply.node.replaceWith(done); else chat().append(done);
+        st.reply = null;
+        scrollDown();
+      } else if (event.type === "error") {
+        st.failed = st.ended = true;
+        st.error = event.text;
+        note(event.text, "error");
+      } else if (event.type === "done") {
+        st.ended = true;
+        stats.usage = { used: event.used, context: event.context, exact: event.exact };
+        stats.speed = event.speed;         // Ollama's own figure replaces the live estimate
+        stats.live = null;
+        showStatus();
+      }
+    }
+  }
+}
+
+function doneFollowing(mine) {
+  if (streaming !== mine) return;          // the page has moved on to another reply
+  setStreaming(null);
+  if (stats.live) {                        // stopped or cut off: the count so far is the speed
+    stats.speed = stats.live.rate;
+    stats.live = null;
+    showStatus();
+  }
+}
+
 async function send(request) {
-  const ctrl = new AbortController();
-  setStreaming(ctrl);
+  const mine = following();
+  setStreaming(mine);
   if (!current) chat().replaceChildren();
   chat().querySelectorAll(".note").forEach((n) => { if (n.querySelector("button")) n.remove(); });
-  let reply = null, failed = false, sent = false, error = null, early = null;
+  const st = { reply: null, sent: false, early: null, failed: false, error: null, ended: false };
   const { picked: pickedBefore, files: filesBefore, ...rest } = request;
   const queue = [...(filesBefore || []), ...(pickedBefore || [])].sort(inQueueOrder);
   if (request.text !== undefined) {
     // Shown straight away, files and all: reading them on the server can take a while.
-    early = renderMessage({ role: "user", content: request.text, status: "complete", attachments:
+    st.early = renderMessage({ role: "user", content: request.text, status: "complete", attachments:
       queue.map((q) => "data" in q ? { path: q.name, kind: "upload", note: size(q.size) }
                                    : { path: q.path, kind: "server", note: q.detail }) });
-    early.classList.add("sending");
-    early.querySelector(".who").append(el("span", { class: "status" }, " · sending"));
-    chat().append(early);
+    st.early.classList.add("sending");
+    st.early.querySelector(".who").append(el("span", { class: "status" }, " · sending"));
+    chat().append(st.early);
     scrollDown(true);
   }
   const body = { session: current, ...rest };
@@ -1562,94 +1657,70 @@ async function send(request) {
   if (!current) Object.assign(body, { model: draft.model || null, skills: draft.skills, tags: draftTagPaths() });
   try {
     const res = await fetch("/api/chat", {
-      method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" },
+      method: "POST", signal: mine.ctrl.signal, headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error((await res.json()).error || res.statusText);
-    const reader = res.body.getReader(), decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (event.type === "session") {
-          if (current !== event.session.id) {
-            if (!current) draft.tags = {};  // the new session has them now
-            current = event.session.id;
-            quietHash = true;
-            location.hash = current;
-            loadNames();
-          }
-          showHeader(event.session);
-          loadSessions();
-        } else if (event.type === "note") {
-          note(event.text);
-        } else if (event.type === "message" && event.message.role === "user") {
-          sent = true;
-          const saved = renderMessage(event.message);
-          if (early) { early.replaceWith(saved); early = null; } else chat().append(saved);
-          reply = pendingReply();
-          chat().append(reply.node);
-          scrollDown(true);
-        } else if (event.type === "thinking" || event.type === "content") {
-          if (!reply) { reply = pendingReply(); chat().append(reply.node); }
-          reply.add(event.type, event.text);
-          tick();
-        } else if (event.type === "message") {
-          const done = renderMessage(event.message);
-          if (reply) reply.node.replaceWith(done); else chat().append(done);
-          reply = null;
-          scrollDown();
-        } else if (event.type === "error") {
-          failed = true;
-          error = event.text;
-          note(event.text, "error");
-        } else if (event.type === "done") {
-          stats.usage = { used: event.used, context: event.context, exact: event.exact };
-          stats.speed = event.speed;         // Ollama's own figure replaces the live estimate
-          stats.live = null;
-          showStatus();
-        }
-      }
-    }
+    if (!res.ok) { st.failed = true; throw new Error((await res.json()).error || res.statusText); }
+    await readReply(res, st);
   } catch (e) {
-    if (e.name !== "AbortError") { failed = true; error = e.message; note(e.message, "error"); }
-  } finally {
-    setStreaming(null);
-    if (stats.live) {                        // stopped or failed: the count so far is the speed
-      stats.speed = stats.live.rate;
-      stats.live = null;
-      showStatus();
+    // Cut off once the message is in, the reply goes on on the server: reopening follows it.
+    if (e.name !== "AbortError" && (st.failed || !st.sent)) {
+      st.failed = true;
+      st.error = e.message;
+      note(e.message, "error");
     }
+  } finally {
+    doneFollowing(mine);
   }
-  if (early) early.remove();                 // it never arrived; the text goes back in the box
-  if (!sent && request.text !== undefined) {
+  if (mine.left) return;                   // the page moved on; the reply goes on without it
+  if (st.early) st.early.remove();         // it never arrived; the text goes back in the box
+  if (!st.sent && request.text !== undefined) {
     // It never arrived: give the message and its files back rather than lose them.
     if (!$("#input").value.trim()) { $("#input").value = request.text; grow(); }
     if (!pending.length && request.files) pending = request.files;
     if (!picked.length && pickedBefore) picked = pickedBefore;
     showPending();
   }
-  if (ctrl.signal.aborted || failed) {
-    // What was kept is on the server now; show it as saved, keeping the reason in view.
+  if (!st.ended || st.failed) {
+    // Stopped, failed or cut off: show what the server has, which follows a reply still going.
     const id = current;
-    if (id) setTimeout(async () => {
+    if (id) {
       await openSession(id);
-      if (error && current === id) { note(error, "error"); scrollDown(true); }
-    }, ctrl.signal.aborted ? 300 : 0);
-    else if (reply) reply.node.remove();
+      if (st.error && current === id) { note(st.error, "error"); scrollDown(true); }
+    } else if (st.reply) st.reply.node.remove();
+  }
+  loadSessions();
+}
+
+// Pick up a reply the server is still writing, from its start, as if it had been sent here.
+async function follow(id) {
+  const mine = following();
+  setStreaming(mine);
+  const st = { reply: pendingReply(), sent: true, failed: false, error: null, ended: false };
+  chat().append(st.reply.node);
+  scrollDown(true);
+  let res = null;
+  try {
+    res = await fetch(`/api/sessions/${encodeURIComponent(id)}/reply`, { signal: mine.ctrl.signal });
+    if (res.ok) await readReply(res, st);
+  } catch {
+  } finally {
+    doneFollowing(mine);
+  }
+  if (mine.left || current !== id) return;
+  if (!res?.ok) { st.reply.node.remove(); return; }
+  if (!st.ended || st.failed) {
+    // Stopped or failed: show where it stands. Cut off: the same, after a moment's grace.
+    if (!st.ended && !mine.stopped) await new Promise((done) => setTimeout(done, 1000));
+    if (current !== id || streaming) return;
+    await openSession(id);
+    if (st.error && current === id) { note(st.error, "error"); scrollDown(true); }
   }
   loadSessions();
 }
 
 function submit() {
-  if (streaming) { streaming.abort(); return; }
+  if (streaming) { stopReply(); return; }
   const input = $("#input"), text = input.value.trim();
   if (!text) {
     if (pending.length || picked.length) note("Add a few words to go with the files.");

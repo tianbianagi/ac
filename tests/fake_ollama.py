@@ -52,21 +52,28 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if kind == "drop":
                 return
+            if kind == "wait":          # text is a threading.Event the test sets to go on
+                text.wait(5)
+                continue
             self._line({"message": {"role": "assistant", kind: text}, "done": False})
         self._line({"message": {"role": "assistant", "content": ""}, "done": True,
                     "prompt_eval_count": fake.prompt_tokens, "eval_count": 7,
                     "eval_duration": 1_000_000_000, "total_duration": 2_000_000_000})
 
     def _line(self, obj):
-        self.wfile.write(json.dumps(obj).encode() + b"\n")
-        self.wfile.flush()
+        try:
+            self.wfile.write(json.dumps(obj).encode() + b"\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass                    # acc stopped reading, as it does when a reply is stopped
 
 
 class FakeOllama:
     """Queue reply scripts in `scripts`; inspect what was sent in `requests`.
 
     A script is a list of (kind, text): kind is "thinking" or "content", or "error" to fail
-    mid-stream, or "drop" to close the connection without finishing.
+    mid-stream, "drop" to close the connection without finishing, or "wait" with a
+    threading.Event to hold the reply there until the test sets it.
     """
 
     def __init__(self, models=("m1", "m2:latest"), capabilities=("completion", "thinking")):

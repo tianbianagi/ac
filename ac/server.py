@@ -16,6 +16,8 @@ import json
 import mimetypes
 import os
 import tempfile
+import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -506,6 +508,99 @@ def chat(store, client, request):
                "speed": round(eval_count / (eval_ns / 1e9), 1) if eval_ns and eval_count else None}
 
 
+class Reply:
+    """A reply being written, apart from any page: chat() runs in a thread of its own, so the
+    reply goes on when the page that asked for it closes, and a page that opens the session
+    later can follow the rest. Pages read its events; stop() ends it the way Stop should."""
+
+    KEEP = 60           # seconds a finished reply stays followable, for a page that just missed it
+
+    def __init__(self):
+        self.events = []
+        self.session_id = None
+        self.reply_from = 0     # where the reply's own events start, for a page that follows later
+        self.failure = None     # what went wrong before the first event, as an HTTP error
+        self.done = False
+        self.finished_at = None
+        self.stopping = False
+        self.cond = threading.Condition()
+
+    def add(self, event):
+        with self.cond:
+            self.events.append(event)
+            if event["type"] == "message" and event["message"]["role"] == "user":
+                self.reply_from = len(self.events)
+            self.cond.notify_all()
+
+    def finish(self, failure=None):
+        with self.cond:
+            self.failure = failure if not self.events else None
+            self.done, self.finished_at = True, time.monotonic()
+            self.cond.notify_all()
+
+    def stop(self):
+        self.stopping = True
+
+    def follow(self, start=0):
+        """The events from `start` on, waiting for each, until the reply is done."""
+        i = start
+        while True:
+            with self.cond:
+                while i >= len(self.events) and not self.done:
+                    self.cond.wait()
+                batch, done = self.events[i:], self.done
+                i += len(batch)
+            yield from batch
+            if done:
+                return
+
+
+_replies = {}                   # (user, session id) -> the Reply being written there
+_replies_lock = threading.Lock()
+
+
+def reply_for(user, session_id):
+    """The reply being written in a session, or one that finished a moment ago."""
+    with _replies_lock:
+        now = time.monotonic()
+        for key, reply in list(_replies.items()):
+            if reply.done and now - reply.finished_at > Reply.KEEP:
+                del _replies[key]
+        return _replies.get((user, session_id))
+
+
+def replying(user, session_id):
+    reply = reply_for(user, session_id)
+    return bool(reply and not reply.done)
+
+
+def write_reply(db_path, user, client, request, reply):
+    """Run chat() to the end into `reply`, whoever is following it. Stopping keeps what came,
+    marked interrupted, as leaving the generator does."""
+    store = Store(db_path, user)
+    failure = None
+    try:
+        events = chat(store, client, request)
+        try:
+            for event in events:
+                if event["type"] == "session" and reply.session_id is None:
+                    reply.session_id = event["session"]["id"]
+                    with _replies_lock:
+                        _replies[(user, reply.session_id)] = reply
+                if reply.stopping:
+                    break
+                reply.add(event)
+        finally:
+            events.close()
+    except Exception as e:      # noqa: BLE001 - whatever it was, the page must hear of it
+        if reply.events:
+            reply.add({"type": "error", "text": str(e) or type(e).__name__})
+        failure = e
+    finally:
+        store.close()
+        reply.finish(failure)
+
+
 def export(store, client, session, request):
     """A session as markdown, the way `/export` makes it, for the page to offer as a download:
     a session still titled with its first message is first named by the model."""
@@ -587,6 +682,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(400, str(e))
                 except (NotFound, Ambiguous) as e:
                     return self._error(404, str(e))
+            if path.startswith("/api/sessions/") and path.endswith("/stop"):
+                return self._stop(store, unquote(path[len("/api/sessions/"):-len("/stop")]))
             if path.startswith("/api/sessions/") and path.endswith("/export"):
                 return self._export(store, unquote(path[len("/api/sessions/"):-len("/export")]),
                                     request)
@@ -680,34 +777,54 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"session": session_json(store.get(session.id))})
 
     def _chat(self, store, request):
-        events = chat(store, self.client, request)
+        """Start a reply in its own thread and follow it. The page going away leaves it running."""
         try:
-            first = next(events)
-        except StopIteration:
-            return self._error(500, "no reply")
-        except BadRequest as e:
-            return self._error(400, str(e))
+            if request.get("session"):
+                session = store.get(str(request["session"]))
+                if replying(store.user, session.id):
+                    return self._error(409, "a reply is still being written in this session")
         except (NotFound, Ambiguous) as e:
             return self._error(404, str(e))
-        except (StoreError, OllamaError, skills.SkillError) as e:
-            return self._error(502 if isinstance(e, OllamaError) else 400, str(e))
-        # Events go out as JSON lines while the reply streams; the connection's end ends them.
+        reply = Reply()
+        threading.Thread(target=write_reply, daemon=True,
+                         args=(self.db_path, store.user, self.client, request, reply)).start()
+        events = reply.follow()
+        first = next(events, None)
+        if first is None:
+            e = reply.failure
+            if isinstance(e, BadRequest):
+                return self._error(400, str(e))
+            if isinstance(e, (NotFound, Ambiguous)):
+                return self._error(404, str(e))
+            if isinstance(e, OllamaError):
+                return self._error(502, str(e))
+            return self._error(400 if e else 500, str(e) if e else "no reply")
+        return self._stream(events, first)
+
+    def _stream(self, events, first=None):
+        """Events as JSON lines while they come. A page that goes away just stops reading."""
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.close_connection = True
         try:
-            self._event(first)
+            if first is not None:
+                self._event(first)
             for event in events:
                 self._event(event)
         except (BrokenPipeError, ConnectionResetError):
-            events.close()          # the page went away: keep what came, marked interrupted
-        except (StoreError, OllamaError) as e:
-            try:
-                self._event({"type": "error", "text": str(e)})
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+            pass
+
+    def _stop(self, store, ref):
+        try:
+            session = store.get(ref)
+        except (NotFound, Ambiguous) as e:
+            return self._error(404, str(e))
+        reply = reply_for(store.user, session.id)
+        if reply and not reply.done:
+            reply.stop()
+        return self._json({"stopping": bool(reply and not reply.done)})
 
     def _event(self, event):
         if event["type"] == "error":
@@ -722,12 +839,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({
                 "sessions": [session_json(s) for s in store.list(search=search, archived=archived)],
                 "archived_count": store.archived_count()})
+        if path.startswith("/sessions/") and path.endswith("/reply"):
+            session = store.get(unquote(path[len("/sessions/"):-len("/reply")]))
+            reply = reply_for(store.user, session.id)
+            if reply is None:
+                raise NotFound("no reply is being written in this session")
+            return self._stream(reply.follow(reply.reply_from))
         if path.startswith("/sessions/"):
             session = store.get(unquote(path[len("/sessions/"):]))
             messages = store.messages(session.id)
             return self._json({"session": session_json(session),
                                "messages": [message_json(m) for m in messages],
-                               "usage": usage(self.client, session, messages)})
+                               "usage": usage(self.client, session, messages),
+                               "replying": replying(store.user, session.id)})
         if path == "/config":
             return self._json({"names": config.speaker_names(store.user), "user": store.user})
         if path == "/models":

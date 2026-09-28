@@ -275,6 +275,54 @@ class ServerTest(unittest.TestCase):
         last = self.store.messages(self.soup.id)[-1]
         self.assertEqual((last.role, last.content, last.status), ("assistant", "one ", "interrupted"))
 
+    def stream(self, method, path, body=None):
+        """A streamed answer to read line by line, as the page does, and to walk away from."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        self.addCleanup(conn.close)
+        conn.request(method, path, body=json.dumps(body).encode() if body is not None else None,
+                     headers={"Host": f"127.0.0.1:{self.port}", "Content-Type": "application/json",
+                              "Origin": f"http://127.0.0.1:{self.port}"})
+        res = conn.getresponse()
+        self.assertEqual(res.status, 200)
+        lines = (json.loads(line) for line in iter(res.readline, b"") if line.strip())
+        return conn, lines
+
+    def test_a_reply_goes_on_after_the_page_leaves(self):
+        go = threading.Event()
+        self.fake.scripts.append([("thinking", "hmm"), ("wait", go), ("content", "Leeks.")])
+        conn, events = self.stream("POST", "/api/chat", {"session": self.soup.id, "text": "Recipe?"})
+        self.assertEqual(next(e for e in events if e["type"] == "thinking")["text"], "hmm")
+        conn.close()                                        # the browser is closed
+
+        path = f"/api/sessions/{self.soup.id}"
+        self.assertTrue(self.get(path)[1]["replying"])
+        self.assertEqual(self.post("/api/chat", {"session": self.soup.id, "text": "Hello?"}),
+                         (409, {"error": "a reply is still being written in this session"}))
+        # A page that opens the session picks up the reply where it is, from its start.
+        _, events = self.stream("GET", f"/api/sessions/{self.soup.id}/reply")
+        go.set()
+        events = list(events)
+        self.assertEqual([e["type"] for e in events], ["thinking", "content", "message", "done"])
+        self.assertEqual(events[2]["message"]["content"], "Leeks.")
+        last = self.store.messages(self.soup.id)[-1]
+        self.assertEqual((last.content, last.thinking, last.status), ("Leeks.", "hmm", "complete"))
+        self.assertFalse(self.get(path)[1]["replying"])
+        self.assertEqual(self.get(f"/api/sessions/{self.lisbon.id}/reply")[0], 404)
+
+    def test_stop_ends_a_reply_and_keeps_what_came(self):
+        go = threading.Event()
+        self.fake.scripts.append([("content", "one "), ("wait", go), ("content", "two "),
+                                  ("content", "three")])
+        _, events = self.stream("POST", "/api/chat", {"session": self.soup.id, "text": "Count"})
+        next(e for e in events if e["type"] == "content")
+        self.assertEqual(self.post(f"/api/sessions/{self.soup.id}/stop", {}), (200, {"stopping": True}))
+        go.set()
+        self.assertNotIn("three", json.dumps(list(events)))
+        last = self.store.messages(self.soup.id)[-1]
+        self.assertEqual((last.role, last.status), ("assistant", "interrupted"))
+        self.assertTrue(last.content.startswith("one ") and "three" not in last.content)
+        self.assertEqual(self.post(f"/api/sessions/{self.soup.id}/stop", {}), (200, {"stopping": False}))
+
     def test_bad_chat_requests(self):
         self.assertEqual(self.post("/api/chat", {"session": self.soup.id, "text": "  "}),
                          (400, {"error": "nothing to send"}))
