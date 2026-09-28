@@ -225,21 +225,34 @@ class ServerTest(unittest.TestCase):
         threading.Thread(target=httpd.serve_forever, args=(0.05,), daemon=True).start()
         self.addCleanup(httpd.shutdown)
 
-        def request(method, path, host, origin=None):
+        def request(method, path, host, origin=None, headers=None):
             conn = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1])
             self.addCleanup(conn.close)
-            headers = {"Host": host, **({"Origin": origin} if origin else {})}
+            headers = {"Host": host, **({"Origin": origin} if origin else {}), **(headers or {})}
             conn.request(method, path, headers=headers)
             res = conn.getresponse()
             res.read()
             return res.status
 
-        self.assertEqual(request("GET", "/api/sessions", "acc.example.me"), 200)
-        self.assertEqual(request("GET", "/api/sessions", "evil.example"), 403)
+        me = {"X-Acc-User": self.store.user}
+        self.assertEqual(request("GET", "/api/sessions", "acc.example.me", headers=me), 200)
+        self.assertEqual(request("GET", "/api/sessions", "evil.example", headers=me), 403)
+        # Through the proxy, a request must say who is asking: no name is refused, never the
+        # owner, so a proxy that loses its header line can't hand everything to the owner.
+        self.assertEqual(request("GET", "/api/sessions", "acc.example.me"), 403)
+        self.assertEqual(request("GET", "/", "acc.example.me"), 403)
+        self.assertEqual(request("GET", "/api/sessions", "acc.example.me",
+                                 headers={"X-Acc-User": ""}), 403)
+        self.assertEqual(request("GET", "/api/sessions", "acc.example.me",
+                                 headers={"X-Acc-User": "mallory"}), 403)
+        # Reached directly, it is still the owner's without a name.
+        self.assertEqual(request("GET", "/api/sessions", "localhost"), 200)
         # Changes still have to come from the proxied page itself.
         path = f"/api/sessions/{self.soup.id}"
-        self.assertEqual(request("DELETE", path, "acc.example.me", "https://evil.example"), 403)
-        self.assertEqual(request("DELETE", path, "acc.example.me", "https://acc.example.me"), 200)
+        self.assertEqual(request("DELETE", path, "acc.example.me", "https://evil.example", me), 403)
+        self.assertEqual(request("DELETE", path, "acc.example.me", "https://acc.example.me"), 403)
+        self.assertEqual(request("DELETE", path, "acc.example.me", "https://acc.example.me", me),
+                         200)
 
 
     # -- chatting ----------------------------------------------------------

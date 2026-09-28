@@ -6,9 +6,10 @@ Each request opens its own connection to the database, so the server can answer 
 once.
 
 It serves the users config.toml names, each with their own sessions and skills, none of
-them shared. The
-proxy says who is asking in the X-Acc-User header, from the client certificate it checked; a
-request without one (as from a browser on this machine) is the owner's.
+them shared. The proxy says who is asking in the X-Acc-User header, from the client
+certificate it checked. A request that reached this machine directly (by 127.0.0.1 or
+localhost, as from a browser here) is the owner's; one that came through the proxy and names
+nobody is refused, so a proxy that stops saying who is asking can't make everyone the owner.
 
 Files reach a conversation only as part of a message, sent from the device the page is on.
 Nothing here names, browses or reads a path on this machine.
@@ -656,20 +657,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, a.data, kind)
         return self._error(404, "not found")
 
+    LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+    def _host(self):
+        return (self.headers.get("Host") or "").rsplit(":", 1)[0].lower()
+
     def _host_ok(self):
         """Only requests addressed to this machine by name: a page elsewhere can't reach the
         server through a hostname that it has pointed at 127.0.0.1. A proxy in front of it
         passes its own name, which --allow-host adds."""
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].lower()
-        return host in ("127.0.0.1", "localhost", *self.allowed_hosts)
+        return self._host() in (*self.LOCAL_HOSTS, *self.allowed_hosts)
 
     def _user(self):
-        """Who is asking: the user the proxy named, or the owner when it named no one. None
-        for a name config.toml doesn't know."""
+        """Who is asking: the user the proxy named, or the owner for a request that reached
+        this machine directly and names no one. None for a name config.toml doesn't know, and
+        for a request through the proxy that names no one: the proxy must always say, so that
+        losing that (a dropped header line, a certificate without a user) refuses the request
+        rather than making it the owner's."""
         name = (self.headers.get(USER_HEADER) or "").strip().lower()
         known = config.users()
         if not name:
-            return known[0]
+            return known[0] if self._host() in self.LOCAL_HOSTS else None
         return name if name in known else None
 
     def _store(self):

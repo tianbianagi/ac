@@ -42,9 +42,10 @@ itself has no login.
 acc can serve more than one person, each with their own sessions and skills; none of
 them sees the others'. Add each extra user to `config.toml` as a `[users.NAME]` table (see
 [Configuration](#configuration)). The proxy says who is asking in an `X-Acc-User: NAME` header,
-typically taken from the client certificate it checked; a request without that header, such as
-from a browser on this machine, is yours (the owner, known by your login name), and one naming a
-user `config.toml` doesn't list is turned away. The terminal commands always act as the owner.
+typically taken from the client certificate it checked, and must always say: a request through
+the proxy that names nobody is turned away, as is one naming a user `config.toml` doesn't list.
+A request that reaches the server directly, as from a browser on this machine, is yours (the
+owner, known by your login name). The terminal commands always act as the owner.
 Nothing anyone sends can read a file on this machine (see [Files](#files)), so a user gets
 their own conversations, the models, and the skills, and nothing else.
 
