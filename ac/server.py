@@ -16,6 +16,7 @@ Nothing here names, browses or reads a path on this machine.
 
 import base64
 import binascii
+import hashlib
 import json
 import mimetypes
 import tempfile
@@ -40,6 +41,18 @@ MAX_BODY = 64 << 20     # a message with its files, base64 and all
 USER_HEADER = "X-Acc-User"
 IMAGE_TYPES = [(b"\x89PNG", "image/png"), (b"\xff\xd8", "image/jpeg"), (b"GIF8", "image/gif"),
                (b"RIFF", "image/webp")]
+# What the page may load or run: its own script (by hash, so nothing a reply smuggles in can run
+# even if the markdown renderer let a tag through), its own styles and images, and this server.
+CSP = ("default-src 'self'; script-src 'self' 'sha256-{script}'; style-src 'self' 'unsafe-inline'; "
+       "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+       "frame-ancestors 'none'; form-action 'self'")
+
+
+def csp_for(page):
+    """The Content-Security-Policy for the page, naming its inline script by hash."""
+    start = page.index(b"<script>") + len(b"<script>")
+    script = page[start:page.index(b"</script>", start)]
+    return CSP.format(script=base64.b64encode(hashlib.sha256(script).digest()).decode())
 
 
 def session_json(s):
@@ -384,10 +397,18 @@ class Handler(BaseHTTPRequestHandler):
     client = None
     allowed_hosts = ()
     quiet = True
+    timeout = 60        # seconds a connection may sit silent: a request never finished lets go
 
     def log_message(self, format, *args):
         if not self.quiet:
             super().log_message(format, *args)
+
+    def log_request(self, code="-", size="-"):
+        """Only what went wrong: every page load and API call would fill the log for nothing,
+        and behind a proxy the proxy keeps the access log."""
+        if isinstance(code, int) and code < 400:
+            return
+        super().log_request(code, size)
 
     def do_GET(self):
         if not self._host_ok() or self._user() is None:
@@ -561,7 +582,7 @@ class Handler(BaseHTTPRequestHandler):
         """Events as JSON lines while they come. A page that goes away just stops reading."""
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
-        self.send_header("Cache-Control", "no-store")
+        self._protect()
         self.end_headers()
         self.close_connection = True
         try:
@@ -667,7 +688,8 @@ class Handler(BaseHTTPRequestHandler):
         except (FileNotFoundError, IsADirectoryError):
             return self._error(404, "not found")
         kind = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        self._send(200, body, kind + ("; charset=utf-8" if kind.startswith("text/") else ""))
+        self._send(200, body, kind + ("; charset=utf-8" if kind.startswith("text/") else ""),
+                   csp=csp_for(body) if name == "index.html" else None)
 
     def _json(self, data, status=200):
         self._send(status, json.dumps(data).encode(), "application/json")
@@ -675,11 +697,19 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, status, message):
         self._json({"error": message}, status)
 
-    def _send(self, status, body, kind):
+    def _protect(self):
+        """Headers every answer carries: nothing is cached, sniffed or sent on as a referrer."""
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
+    def _send(self, status, body, kind, csp=None):
         self.send_response(status)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self._protect()
+        if csp:
+            self.send_header("Content-Security-Policy", csp)
         self.end_headers()
         try:
             self.wfile.write(body)

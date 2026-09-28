@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import http.client
 import json
 import os
+import socket
 import tempfile
 import threading
 import unittest
@@ -163,6 +165,43 @@ class ServerTest(unittest.TestCase):
         self.assertIn(b"<title>acc</title>", body)
         self.assertEqual(self.get("/static/../server.py")[0], 404)
         self.assertEqual(self.get("/nope")[0], 404)
+
+    def headers(self, path, method="GET"):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        self.addCleanup(conn.close)
+        conn.request(method, path, headers={"Host": f"127.0.0.1:{self.port}"})
+        res = conn.getresponse()
+        res.read()
+        return dict(res.getheaders())
+
+    def test_answers_carry_protective_headers(self):
+        page = self.headers("/")
+        self.assertEqual((page["Cache-Control"], page["X-Content-Type-Options"], page["Referrer-Policy"]),
+                         ("no-store", "nosniff", "no-referrer"))
+        # The page's own script runs, named by hash, and nothing else: the hash must match.
+        html = self.get("/")[1]
+        script = html.split(b"<script>", 1)[1].split(b"</script>", 1)[0]
+        digest = base64.b64encode(hashlib.sha256(script).digest()).decode()
+        self.assertIn(f"script-src 'self' 'sha256-{digest}'", page["Content-Security-Policy"])
+        self.assertIn("frame-ancestors 'none'", page["Content-Security-Policy"])
+        api = self.headers("/api/sessions")
+        self.assertEqual(api["X-Content-Type-Options"], "nosniff")
+        self.assertNotIn("Content-Security-Policy", api)
+        self.assertEqual(self.headers("/sw.js")["X-Content-Type-Options"], "nosniff")
+
+    def test_a_request_that_never_finishes_is_let_go(self):
+        # A body that never comes must not hold a thread forever.
+        httpd = server.make_server(0, db_path=self.db, client=Client(self.fake.host))
+        httpd.RequestHandlerClass.timeout = 0.3
+        self.addCleanup(httpd.server_close)
+        threading.Thread(target=httpd.serve_forever, args=(0.05,), daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        sock = socket.create_connection(("127.0.0.1", httpd.server_address[1]))
+        self.addCleanup(sock.close)
+        sock.sendall(b"POST /api/chat HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                     b"Content-Length: 100\r\n\r\n{")
+        sock.settimeout(5)
+        self.assertEqual(sock.recv(1024), b"")          # closed by the server, not by us
 
     def test_serves_what_installing_the_app_needs(self):
         status, body = self.get("/static/manifest.webmanifest")
