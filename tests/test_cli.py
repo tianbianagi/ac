@@ -226,7 +226,7 @@ class CliTest(unittest.TestCase):
 
     def test_config_dir_can_be_moved(self):
         moved = self.tmp / "elsewhere"
-        write_skill(moved / "skills", "haiku", description="Poetry mode")
+        write_skill(moved / "users" / config.owner() / "skills", "haiku", description="Poetry mode")
         with mock.patch.dict(os.environ, {"AC_CONFIG_DIR": str(moved)}):
             self.assertEqual(config.config_path(), moved / "config.toml")
             _, out, _ = self.ac("skills")

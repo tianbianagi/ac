@@ -119,7 +119,7 @@ class ServerTest(unittest.TestCase):
         config_dir.mkdir()
         (config_dir / "config.toml").write_text(
             'user_name = "Sam"\n[users.huiwen]\nassistant_name = "Codi"\n')
-        write_skill(config_dir / "skills", "shared")
+        write_skill(config_dir / "users" / self.store.user / "skills", "mine")
         write_skill(config_dir / "users" / "huiwen" / "skills", "hers", body="Hers only.")
         her = {"X-Acc-User": "Huiwen"}
 
@@ -130,12 +130,11 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.delete(f"/api/sessions/{self.lisbon.id}", her)[0], 404)
         self.assertEqual(self.delete("/api/attachments/1", her)[0], 404)
         self.assertEqual(self.get("/api/config", headers=her)[1],
-                         {"names": {"user": "Huiwen", "assistant": "Codi"}, "user": "huiwen",
-                          "owner": False})
-        self.assertTrue(self.get("/api/config")[1]["owner"])
+                         {"names": {"user": "Huiwen", "assistant": "Codi"}, "user": "huiwen"})
         self.assertEqual([s["name"] for s in self.get("/api/skills", headers=her)[1]["skills"]],
-                         ["hers", "shared"])
-        self.assertEqual([s["name"] for s in self.get("/api/skills")[1]["skills"]], ["shared"])
+                         ["hers"])
+        self.assertEqual([s["name"] for s in self.get("/api/skills")[1]["skills"]], ["mine"])
+        self.assertEqual(self.post("/api/chat", {"text": "hi", "skills": ["mine"]}, her)[0], 400)
 
         self.fake.reply("Hi Huiwen")
         status, events = self.post("/api/chat", {"text": "Hello", "model": "m1",
@@ -414,68 +413,73 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([m["name"] for m in body["models"]], ["m1", "m2:latest"])
         write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku", description="Poetry mode")
         _, body = self.get("/api/skills")
-        self.assertEqual(body["skills"],
-                         [{"name": "haiku", "description": "Poetry mode", "scope": "other"}])
+        self.assertEqual(body, {"skills": [{"name": "haiku", "description": "Poetry mode"}],
+                                "library": []})       # AC_SKILLS_PATH: the owner's, read-only
 
     def test_skills_are_managed_from_the_page(self):
         config_dir = Path(os.environ["AC_CONFIG_DIR"])
         config_dir.mkdir()
         (config_dir / "config.toml").write_text("[users.hagi]\n")
-        mine, shared = config_dir / "users" / self.store.user / "skills", config_dir / "skills"
+        mine = config_dir / "users" / self.store.user / "skills"
         hers = {"X-Acc-User": "hagi"}
 
-        status, body = self.post("/api/skills", {"scope": "personal", "name": "brief",
-                                                 "description": "Short: \"direct\"", "body": "Be brief."})
+        status, body = self.post("/api/skills", {"name": "brief", "description": "Short: \"direct\"",
+                                                 "body": "Be brief."})
         self.assertEqual((status, body["skill"]), (200, {
-            "scope": "personal", "name": "brief", "description": "Short: \"direct\"", "body": "Be brief."}))
-        self.assertEqual(body["library"], {"personal": [
-            {"name": "brief", "description": "Short: \"direct\"", "scope": "personal"}], "shared": []})
+            "name": "brief", "description": "Short: \"direct\"", "body": "Be brief."}))
+        self.assertEqual(body["library"], [{"name": "brief", "description": "Short: \"direct\""}])
         self.assertTrue((mine / "brief" / "SKILL.md").is_file())
-        self.assertEqual(self.get("/api/skills", headers=hers)[1]["skills"], [])    # not hers
+        self.assertEqual(self.get("/api/skills", headers=hers)[1], {"skills": [], "library": []})
 
         (mine / "brief" / "notes.txt").write_text("kept")         # other files go along with it
-        status, body = self.post("/api/skills", {"scope": "shared", "name": "terse", "description": "",
-                                                 "body": "Be terse.", "was": {"scope": "personal",
-                                                                              "name": "brief"}})
+        status, body = self.post("/api/skills", {"name": "terse", "description": "", "body": "Be terse.",
+                                                 "was": "brief"})
         self.assertEqual(status, 200)
         self.assertFalse((mine / "brief").exists())
-        self.assertEqual((shared / "terse" / "notes.txt").read_text(), "kept")
-        self.assertEqual(self.get("/api/skills", headers=hers)[1]["skills"],
-                         [{"name": "terse", "description": "", "scope": "shared"}])
-        self.assertEqual(self.get("/api/skills/shared/terse")[1]["body"], "Be terse.")
+        self.assertEqual((mine / "terse" / "notes.txt").read_text(), "kept")
+        self.assertEqual(self.get("/api/skills/terse")[1]["body"], "Be terse.")
+        self.assertEqual(self.get("/api/skills/terse", headers=hers)[0], 404)     # hers has none
 
-        self.post("/api/skills", {"scope": "personal", "name": "terse", "body": "Mine wins."})
-        _, body = self.get("/api/skills")
-        self.assertEqual(body["skills"], [{"name": "terse", "description": "", "scope": "personal"}])
-        self.assertEqual([k["name"] for k in body["library"]["shared"]], ["terse"])
+        # Nothing she writes reaches me: her library is her own, whatever the name.
+        self.post("/api/skills", {"name": "terse", "body": "Hers."}, hers)
+        self.assertEqual(self.get("/api/skills/terse")[1]["body"], "Be terse.")
+        self.assertEqual(self.get("/api/skills/terse", headers=hers)[1]["body"], "Hers.")
 
-        for bad in ({"scope": "shared", "name": "Bad Name", "body": "x"},
-                    {"scope": "shared", "name": "ok", "body": "  "},
-                    {"scope": "elsewhere", "name": "ok", "body": "x"},
-                    {"scope": "shared", "name": "ok", "body": "x", "was": {"scope": "shared", "name": "gone"}},
-                    {"scope": "personal", "name": "terse", "body": "x",       # would overwrite another
-                     "was": {"scope": "shared", "name": "terse"}}):
+        for bad in ({"name": "Bad Name", "body": "x"}, {"name": "ok", "body": "  "},
+                    {"name": "ok", "body": "x", "was": "gone"}, {"name": "ok", "body": "x", "was": "../x"},
+                    {"name": "ok", "body": "x", "was": {"scope": "shared", "name": "terse"}}):
             self.assertEqual(self.post("/api/skills", bad)[0], 400, bad)
-        self.assertEqual(self.get("/api/skills/shared/nope")[0], 404)
-        self.assertEqual(self.get("/api/skills/personal/..")[0], 404)
+        self.assertEqual(self.get("/api/skills/nope")[0], 404)
+        self.assertEqual(self.get("/api/skills/..")[0], 404)
+        self.assertEqual(self.get("/api/skills/shared/terse")[0], 404)
 
-        # Only the owner changes what everyone shares: nothing she writes reaches my prompts.
-        self.assertEqual(self.delete("/api/skills/shared/terse", hers)[0], 403)
-        self.assertEqual(self.post("/api/skills", {"scope": "shared", "name": "terse", "body": "Mine now."},
-                                   hers)[0], 403)
-        self.assertEqual(self.post("/api/skills", {"scope": "personal", "name": "taken", "body": "x",
-                                                   "was": {"scope": "shared", "name": "terse"}}, hers)[0], 403)
-        self.assertEqual(self.get("/api/skills/shared/terse", headers=hers)[1]["body"], "Be terse.")
-        self.assertEqual(self.post("/api/skills", {"scope": "personal", "name": "own", "body": "Hers."},
-                                   hers)[0], 200)
-        status, body = self.delete("/api/skills/shared/terse")
+        status, body = self.delete("/api/skills/terse")
         self.assertEqual((status, body["deleted"]), (200, "terse"))
-        self.assertEqual((shared / "terse" / "notes.txt").read_text(), "kept")
-        self.assertFalse((shared / "terse" / "SKILL.md").exists())
-        self.assertEqual(self.delete("/api/skills/personal/terse", hers)[0], 404)   # not hers
-        self.assertEqual(self.delete("/api/skills/personal/terse")[0], 200)
-        self.assertFalse((mine / "terse").exists())
-        self.assertEqual(self.delete("/api/skills/personal/own", hers)[0], 200)
+        self.assertEqual((mine / "terse" / "notes.txt").read_text(), "kept")
+        self.assertFalse((mine / "terse" / "SKILL.md").exists())
+        self.assertEqual(self.get("/api/skills/terse", headers=hers)[1]["body"], "Hers.")  # untouched
+        self.assertEqual(self.delete("/api/skills/terse")[0], 404)
+        self.assertEqual(self.delete("/api/skills/terse", hers)[0], 200)
+
+    def test_two_messages_at_once_get_one_reply(self):
+        # Checked and taken in one step: the second sender is told to wait, whatever the timing.
+        first, second = server.Reply(), server.Reply()
+        self.assertTrue(server.claim(self.store.user, self.soup.id, first))
+        self.assertFalse(server.claim(self.store.user, self.soup.id, second))
+        self.assertTrue(server.claim("someone-else", self.soup.id, second))    # not the same session
+        first.finish()
+        third = server.Reply()
+        self.assertTrue(server.claim(self.store.user, self.soup.id, third))
+        self.assertIs(server.reply_for(self.store.user, self.soup.id), third)
+        # Over HTTP: a refused message is refused before anything is saved.
+        go = threading.Event()
+        self.fake.scripts.append([("content", "one "), ("wait", go), ("content", "two")])
+        conn, events = self.stream("POST", "/api/chat", {"session": self.lisbon.id, "text": "First"})
+        next(e for e in events if e["type"] == "content")
+        self.assertEqual(self.post("/api/chat", {"session": self.lisbon.id, "text": "Second"})[0], 409)
+        go.set()
+        list(events)
+        self.assertEqual([m.content for m in self.store.messages(self.lisbon.id)][-2:], ["First", "one two"])
 
     def test_change_a_sessions_model_and_skills(self):
         write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku")

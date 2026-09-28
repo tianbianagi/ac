@@ -5,7 +5,8 @@ name passed with --allow-host, for a proxy in front of it), since it can read ev
 Each request opens its own connection to the database, so the server can answer several at
 once.
 
-It serves the users config.toml names, each with their own sessions and skills. The
+It serves the users config.toml names, each with their own sessions and skills, none of
+them shared. The
 proxy says who is asking in the X-Acc-User header, from the client certificate it checked; a
 request without one (as from a browser on this machine) is the owner's.
 
@@ -63,10 +64,6 @@ class BadRequest(Exception):
     pass
 
 
-class Forbidden(Exception):
-    pass
-
-
 def usage(client, session, messages):
     """Context in use as the latest reply left it: {"used": tokens, "context": the model's
     window, "exact": whether that is Ollama's figure for the loaded model or a best guess}."""
@@ -113,52 +110,35 @@ def read_files(sent):
 
 
 def skills_json(user):
-    """What the page needs about skills: those a session can attach (a user's own winning over a
-    shared one of the same name), and each library's own, for managing them."""
-    def listed(found, scope):
-        return [{"name": k.name, "description": k.description, "scope": scope}
-                for _, k in sorted(found.items())]
-    scope_of = {config.personal_skills_dir(user): "personal", config.shared_skills_dir(): "shared"}
-    usable = []
-    for name, k in sorted(skills.discover(config.skills_dirs(user)).items()):
-        usable.append({"name": name, "description": k.description,
-                       "scope": scope_of.get(k.path.parent.parent, "other")})
-    return {"skills": usable,
-            "library": {scope: listed(skills.discover([skills.library(scope, user)]), scope)
-                        for scope in skills.SCOPES}}
+    """What the page needs about skills: those a session can attach, and the user's own
+    library, which is what the page can change (AC_SKILLS_PATH skills are the owner's, read
+    from disk only)."""
+    def listed(found):
+        return [{"name": k.name, "description": k.description} for _, k in sorted(found.items())]
+    return {"skills": listed(skills.discover(config.skills_dirs(user))),
+            "library": listed(skills.discover([skills.library(user)]))}
 
 
-def skill_json(user, scope, name):
-    """One skill of a library, for editing: {"scope", "name", "description", "body"}."""
-    path = skills.library(scope, user) / name / skills.FILENAME
+def skill_json(user, name):
+    """One skill of the user's library, for editing: {"name", "description", "body"}."""
+    path = skills.library(user) / name / skills.FILENAME
     if not skills.NAME.fullmatch(name) or not path.is_file():
-        raise NotFound(f"no {scope} skill named '{name}'")
+        raise NotFound(f"no skill named '{name}'")
     meta, body = skills.parse(path.read_text(encoding="utf-8"))
-    return {"scope": scope, "name": name, "description": meta.get("description", ""), "body": body}
-
-
-def may_change(user, scope):
-    """Only the owner changes what everyone shares: another user could otherwise write into
-    the owner's conversations through a shared skill."""
-    if scope == "shared" and user != config.owner():
-        raise Forbidden("only the owner can change shared skills")
+    return {"name": name, "description": meta.get("description", ""), "body": body}
 
 
 def save_skill(user, request):
-    """Create or change a skill from {"scope", "name", "description", "body", "was"?: {"scope",
-    "name"}}; see skills.save."""
+    """Create or change a skill from {"name", "description", "body", "was"?: NAME}; see
+    skills.save."""
     was = request.get("was")
-    if was is not None and not (isinstance(was, dict) and was.get("scope") and was.get("name")):
-        raise BadRequest("was must say the skill's scope and name")
-    may_change(user, str(request.get("scope") or ""))
-    if was is not None:
-        may_change(user, str(was.get("scope")))
+    if was is not None and not isinstance(was, str):
+        raise BadRequest("was must be the skill's name until now")
     try:
-        skills.save(user, str(request.get("scope") or ""), request.get("name"),
-                    request.get("description"), request.get("body"), was)
+        skills.save(user, request.get("name"), request.get("description"), request.get("body"), was)
     except skills.SkillError as e:
         raise BadRequest(str(e)) from None
-    return skill_json(user, str(request["scope"]), str(request["name"]).strip())
+    return skill_json(user, str(request["name"]).strip())
 
 
 def update_session(store, client, session, request):
@@ -347,6 +327,18 @@ def replying(user, session_id):
     return bool(reply and not reply.done)
 
 
+def claim(user, session_id, reply):
+    """Make `reply` the one being written in a session, unless another still is: checked and
+    taken in one step, so two messages sent at once can't both start a reply."""
+    with _replies_lock:
+        current = _replies.get((user, session_id))
+        if current is not None and not current.done:
+            return False
+        reply.session_id = session_id
+        _replies[(user, session_id)] = reply
+        return True
+
+
 def write_reply(db_path, user, client, request, reply):
     """Run chat() to the end into `reply`, whoever is following it. Stopping keeps what came,
     marked interrupted, as leaving the generator does."""
@@ -356,10 +348,8 @@ def write_reply(db_path, user, client, request, reply):
         events = chat(store, client, request)
         try:
             for event in events:
-                if event["type"] == "session" and reply.session_id is None:
-                    reply.session_id = event["session"]["id"]
-                    with _replies_lock:
-                        _replies[(user, reply.session_id)] = reply
+                if event["type"] == "session" and reply.session_id is None:  # a new session
+                    claim(user, event["session"]["id"], reply)
                 if reply.stopping:
                     break
                 reply.add(event)
@@ -448,8 +438,6 @@ class Handler(BaseHTTPRequestHandler):
                                        **skills_json(store.user)})
                 except BadRequest as e:
                     return self._error(400, str(e))
-                except Forbidden as e:
-                    return self._error(403, str(e))
             if path.startswith("/api/sessions/") and path.endswith("/stop"):
                 return self._stop(store, unquote(path[len("/api/sessions/"):-len("/stop")]))
             if path.startswith("/api/sessions/") and path.endswith("/export"):
@@ -468,7 +456,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/attachments/"):
             return self._delete_attachment(path[len("/api/attachments/"):])
         if path.startswith("/api/skills/"):
-            return self._delete_skill(*map(unquote, path[len("/api/skills/"):].partition("/")[::2]))
+            return self._delete_skill(unquote(path[len("/api/skills/"):]))
         if not path.startswith("/api/sessions/"):
             return self._error(404, "not found")
         ref, _, rest = path[len("/api/sessions/"):].partition("/messages/")
@@ -484,14 +472,11 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             store.close()
 
-    def _delete_skill(self, scope, name):
-        """Delete one of a library's skills. Sessions that attached it are told it's gone."""
+    def _delete_skill(self, name):
+        """Delete one of the user's skills. Sessions that attached it are told it's gone."""
         user = self._user()
         try:
-            may_change(user, scope)
-            skills.remove(user, scope, name)
-        except Forbidden as e:
-            return self._error(403, str(e))
+            skills.remove(user, name)
         except skills.SkillError as e:
             return self._error(404, str(e))
         return self._json({"deleted": name, **skills_json(user)})
@@ -549,14 +534,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _chat(self, store, request):
         """Start a reply in its own thread and follow it. The page going away leaves it running."""
+        reply = Reply()
         try:
             if request.get("session"):
                 session = store.get(str(request["session"]))
-                if replying(store.user, session.id):
+                if not claim(store.user, session.id, reply):
                     return self._error(409, "a reply is still being written in this session")
         except (NotFound, Ambiguous) as e:
             return self._error(404, str(e))
-        reply = Reply()
         threading.Thread(target=write_reply, daemon=True,
                          args=(self.db_path, store.user, self.client, request, reply)).start()
         events = reply.follow()
@@ -624,8 +609,7 @@ class Handler(BaseHTTPRequestHandler):
                                "usage": usage(self.client, session, messages),
                                "replying": replying(store.user, session.id)})
         if path == "/config":
-            return self._json({"names": config.speaker_names(store.user), "user": store.user,
-                               "owner": store.user == config.owner()})
+            return self._json({"names": config.speaker_names(store.user), "user": store.user})
         if path == "/models":
             try:
                 models = self.client.list_models()
@@ -638,11 +622,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/skills":
             return self._json(skills_json(store.user))
         if path.startswith("/skills/"):
-            scope, _, name = path[len("/skills/"):].partition("/")
-            try:
-                return self._json(skill_json(store.user, unquote(scope), unquote(name)))
-            except skills.SkillError as e:
-                return self._error(404, str(e))
+            return self._json(skill_json(store.user, unquote(path[len("/skills/"):])))
         if path.startswith("/attachments/"):
             try:
                 a = store.attachment(int(path[len("/attachments/"):]))

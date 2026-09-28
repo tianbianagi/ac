@@ -202,10 +202,6 @@ select.btn { padding-right: 8px; max-width: 100%; }
                                                      border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
 #skill-form input[type=text]:focus, #skill-form textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 #skill-form textarea { flex: 1; resize: none; font: 13px/1.5 var(--mono); }
-#skill-form input:read-only, #skill-form textarea:read-only { color: var(--muted); }
-#skill-form .scope { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px; }
-#skill-form .scope label { display: inline-flex; gap: 6px; align-items: center; }
-#skill-form .scope input { accent-color: var(--accent); }
 #skill-form .hint { font-size: 12px; color: var(--amber); }
 #skill-form .row { display: flex; gap: 8px; align-items: center; }
 #skill-form .spacer { flex: 1; }
@@ -334,10 +330,6 @@ details.thinking .plain { border-left: 3px solid var(--line); padding-left: 10px
         <input id="skill-name" type="text" placeholder="e.g. concise" autocomplete="off" autocapitalize="off" spellcheck="false">
       </label>
       <div id="skill-rename-hint" class="hint" hidden>Chats that use it by its old name will need it turned on again.</div>
-      <div id="skill-scope" class="scope" role="radiogroup" aria-label="Who can use it">
-        <label><input type="radio" name="skill-scope" value="personal"> Just me</label>
-        <label><input type="radio" name="skill-scope" value="shared"> Everyone</label>
-      </div>
       <label class="field">Description
         <input id="skill-description" type="text" placeholder="One line on what it's for" autocomplete="off">
       </label>
@@ -460,7 +452,6 @@ let models = [], allSkills = [];
 // Choices for a new chat, until its first message.
 const draft = { model: "", skills: [] };
 let pending = [];                         // files to go with the next message: {name, data, size}
-let isOwner = true;                       // whether this is the owner: only they change shared skills
 const chat = () => $("#chat .inner");
 
 function remembered(key, value) {
@@ -578,8 +569,7 @@ function fillSkills() {
       const next = box.checked ? [...refs, ref] : refs.filter((r) => skillName(r) !== s.name);
       change({ skills: next });
     });
-    const about = [s.description, s.scope === "personal" ? "just yours" : ""].filter(Boolean).join(" · ");
-    return el("label", {}, box, el("span", {}, s.name, about ? el("small", {}, about) : null));
+    return el("label", {}, box, el("span", {}, s.name, s.description ? el("small", {}, s.description) : null));
   }));
   if (!rows.length) panel.append(el("div", { class: "empty" }, "No skills yet."));
   const manage = el("button", { class: "btn", type: "button" }, "Manage skills…");
@@ -594,11 +584,11 @@ async function loadChoices() {
 }
 
 // -- managing skills ------------------------------------------------------------------------------
-// Everyone has skills of their own and shares the rest; either kind can be made, changed, moved to
-// the other kind, renamed or deleted here. What a session has turned on is its own business.
+// Each user has skills of their own and nobody else's: they can be made, changed, renamed or
+// deleted here. What a session has turned on is its own business.
 
-let skillLibrary = { personal: [], shared: [] };
-let editingSkill = null;                   // {scope, name} of the skill in the form; null for a new one
+let skillLibrary = [];                     // the user's own skills, the ones the sheet can change
+let editingSkill = null;                   // the name of the skill in the form; null for a new one
 
 function takeSkills(data) {
   allSkills = data.skills;
@@ -622,51 +612,36 @@ function showSkillList() {
   $("#skills-list").hidden = false;
   $("#skill-new").hidden = $("#skills-done").hidden = false;
   $("#skills-heading").textContent = "Skills";
-  const mine = new Set(skillLibrary.personal.map((k) => k.name));
-  const shared = new Set(skillLibrary.shared.map((k) => k.name));
-  const section = (title, list, empty, aside) => [
-    el("li", { class: "section" }, title),
-    ...(list.length ? list.map((k) => {
-      const about = [k.description, aside(k)].filter(Boolean).join(" · ");
-      const b = el("button", { type: "button" }, k.name, about ? el("small", {}, about) : null);
-      b.addEventListener("click", () => editSkill(k));
-      return el("li", {}, b);
-    }) : [el("li", { class: "empty" }, empty)]),
-  ];
-  $("#skills-list").replaceChildren(
-    ...section("Just yours", skillLibrary.personal, "None yet. Only you see the skills you keep here.",
-               (k) => shared.has(k.name) ? "used instead of the shared one" : ""),
-    ...section("Shared with everyone", skillLibrary.shared, "None yet.",
-               (k) => mine.has(k.name) ? "yours of this name is used instead" : ""));
+  const rows = skillLibrary.map((k) => {
+    const b = el("button", { type: "button" }, k.name, k.description ? el("small", {}, k.description) : null);
+    b.addEventListener("click", () => editSkill(k));
+    return el("li", {}, b);
+  });
+  $("#skills-list").replaceChildren(el("li", { class: "section" }, "Your skills"),
+    ...(rows.length ? rows : [el("li", { class: "empty" }, "None yet. Only you see the skills you keep here.")]));
 }
 
 async function editSkill(k) {
-  try { showSkillForm(await api(`/skills/${encodeURIComponent(k.scope)}/${encodeURIComponent(k.name)}`)); }
+  try { showSkillForm(await api(`/skills/${encodeURIComponent(k.name)}`)); }
   catch (e) { note(e.message, "error"); }
 }
 
 function showSkillForm(skill) {
-  editingSkill = skill.name ? { scope: skill.scope, name: skill.name } : null;
+  editingSkill = skill.name || null;
   $("#skills-list").hidden = true;
   $("#skill-form").hidden = false;
   $("#skill-new").hidden = $("#skills-done").hidden = true;
-  $("#skills-heading").textContent = editingSkill ? skill.name : "New skill";
+  $("#skills-heading").textContent = editingSkill || "New skill";
   $("#skill-name").value = skill.name || "";
-  for (const radio of document.getElementsByName("skill-scope")) radio.checked = radio.value === (skill.scope || "personal");
   $("#skill-description").value = skill.description || "";
   $("#skill-body").value = skill.body || "";
   $("#skill-rename-hint").hidden = true;
-  // Only the owner changes what everyone shares; anyone else may read a shared skill here.
-  const readOnly = !isOwner && skill.scope === "shared";
-  for (const field of ["#skill-name", "#skill-description", "#skill-body"]) $(field).readOnly = readOnly;
-  $("#skill-scope").hidden = !isOwner;
-  $("#skill-form button[type=submit]").hidden = readOnly;
   const del = $("#skill-delete");
-  del.hidden = !editingSkill || readOnly;
+  del.hidden = !editingSkill;
   del.classList.remove("asking");
   del.textContent = "Delete";
-  skillStatus(readOnly ? "Shared with everyone; only the owner can change it." : "");
-  (readOnly ? $("#skill-cancel") : editingSkill ? $("#skill-body") : $("#skill-name")).focus();
+  skillStatus("");
+  (editingSkill ? $("#skill-body") : $("#skill-name")).focus();
 }
 
 function skillStatus(text, error = false) {
@@ -685,10 +660,9 @@ async function skillRequest(method, path, body) {
 
 async function saveSkill(e) {
   e.preventDefault();
-  const scope = [...document.getElementsByName("skill-scope")].find((r) => r.checked)?.value || "personal";
   try {
     takeSkills(await skillRequest("POST", "/skills", {
-      scope, name: $("#skill-name").value.trim(), description: $("#skill-description").value,
+      name: $("#skill-name").value.trim(), description: $("#skill-description").value,
       body: $("#skill-body").value, was: editingSkill }));
     showSkillList();
   } catch (err) {
@@ -704,8 +678,7 @@ async function deleteSkill() {
     return;
   }
   try {
-    takeSkills(await skillRequest("DELETE",
-      `/skills/${encodeURIComponent(editingSkill.scope)}/${encodeURIComponent(editingSkill.name)}`));
+    takeSkills(await skillRequest("DELETE", `/skills/${encodeURIComponent(editingSkill)}`));
     showSkillList();
   } catch (err) {
     skillStatus(err.message, true);
@@ -1382,7 +1355,7 @@ $("#skill-cancel").addEventListener("click", showSkillList);
 $("#skill-delete").addEventListener("click", deleteSkill);
 $("#skill-form").addEventListener("submit", saveSkill);
 $("#skill-name").addEventListener("input", () => {
-  $("#skill-rename-hint").hidden = !editingSkill || $("#skill-name").value.trim() === editingSkill.name;
+  $("#skill-rename-hint").hidden = !editingSkill || $("#skill-name").value.trim() === editingSkill;
 });
 $("#skills-sheet").addEventListener("click", (e) => {   // outside the sheet: only the list closes
   if (e.target === $("#skills-sheet") && $("#skill-form").hidden) closeSkills();
@@ -1416,9 +1389,7 @@ window.addEventListener("hashchange", () => {
 
 (async () => {
   try {
-    const config = await api("/config");
-    names = config.names;
-    isOwner = config.owner;
+    names = (await api("/config")).names;
     $("#me").textContent = names.user;     // whose sessions these are: acc can serve several people
   } catch {}
   await loadSessions();

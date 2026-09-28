@@ -102,14 +102,12 @@ description: Short, direct answers with no preamble or recap
 Answer in as few words as the question allows. ...
 ```
 
-Put skills in `~/accspace/config/skills/<name>/SKILL.md` (see `examples/skills/`), or add directories
-with `AC_SKILLS_PATH`. Skills there are everyone's; one user's own go in
-`~/accspace/config/users/<user>/skills/<name>/SKILL.md`, and win over a shared skill of that name.
-In the browser, **Skills → Manage skills…** makes, edits, renames and deletes both kinds, and moves
-a skill between just yours and everyone's; only the owner changes the shared ones, since they
-end up in everyone's prompts. Attach them from **Skills** in the browser, or with
-`acc set ID --add-skill NAME` and `acc ask -s NAME`. A skill is always named, never given by
-path: only the skill libraries are read.
+Each user has a skill library of their own, `~/accspace/config/users/<user>/skills/<name>/SKILL.md`
+(see `examples/skills/`), and nobody else's: no skill is shared, so nothing one user writes can
+end up in another's prompt. The owner can add read-only directories of skills with
+`AC_SKILLS_PATH`. In the browser, **Skills → Manage skills…** makes, edits, renames and deletes
+your skills. Attach them from **Skills** in the browser, or with `acc set ID --add-skill NAME` and
+`acc ask -s NAME`. A skill is always named, never given by path: only your library is read.
 
 - Skills are **instructions only**. Nothing is executed and the model gets no tools.
 - The system prompt is rebuilt on every turn from the session's own system text plus its attached
@@ -165,8 +163,8 @@ are dropped, and if another session already owns the name, the session id is app
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
-| `AC_SKILLS_PATH` | extra skill directories (`:`-separated), searched first | |
-| `AC_CONFIG_DIR` | folder holding `config.toml` and `skills/` | `~/accspace/config` |
+| `AC_SKILLS_PATH` | the owner's extra skill directories (`:`-separated), searched first | |
+| `AC_CONFIG_DIR` | folder holding `config.toml` and `users/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |
 | `OLLAMA_HOST` | Ollama server | `127.0.0.1:11434` |
 | `AC_DEBUG=1` | print each request payload to stderr | |

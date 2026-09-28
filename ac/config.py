@@ -26,31 +26,26 @@ def db_path():
 
 
 def config_dir():
-    """Folder holding config.toml and skills/: $AC_CONFIG_DIR, else ~/accspace/config."""
+    """Folder holding config.toml and users/: $AC_CONFIG_DIR, else ~/accspace/config."""
     override = os.environ.get("AC_CONFIG_DIR")
     if override:
         return Path(override).expanduser()
     return Path.home() / "accspace" / "config"
 
 
-def shared_skills_dir():
-    """The skill library everyone shares."""
-    return config_dir() / "skills"
-
-
-def personal_skills_dir(user):
-    """One user's own skill library."""
+def skills_dir(user):
+    """One user's skill library: the only place their skills come from."""
     return config_dir() / "users" / user / "skills"
 
 
 def skills_dirs(user=None):
-    """Skill search path: AC_SKILLS_PATH entries first, then the user's own library (when a
-    user is given), then the library everyone shares."""
-    extra = os.environ.get("AC_SKILLS_PATH", "")
+    """Skill search path for one user (the owner when none is given): AC_SKILLS_PATH entries,
+    which are the owner's alone, then the user's own library. No skill is shared: what one
+    user writes never reaches another's prompt."""
+    user = user or owner()
+    extra = os.environ.get("AC_SKILLS_PATH", "") if user == owner() else ""
     dirs = [Path(p).expanduser() for p in extra.split(os.pathsep) if p]
-    if user:
-        dirs.append(personal_skills_dir(user))
-    dirs.append(shared_skills_dir())
+    dirs.append(skills_dir(user))
     return dirs
 
 
