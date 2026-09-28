@@ -53,6 +53,15 @@ class BuildMessagesTest(unittest.TestCase):
         self.assertEqual(make_title("  hello\n world "), "hello world")
         self.assertEqual(len(make_title("x" * 200)), 60)
 
+    def test_make_title_strips_markdown(self):
+        self.assertEqual(make_title("## Markdown test\n\nReply with **just** the word `ok`."),
+                         "Markdown test Reply with just the word ok.")
+        self.assertEqual(make_title("- one\n- *two*\n1. three\n> quoted"), "one two three quoted")
+        self.assertEqual(make_title("```py\nprint(1)\n```\n---\nsee [docs](http://x.y)"),
+                         "print(1) see docs")
+        self.assertEqual(make_title("| a | b |\n|---|---|\n| 1 | 2 |"), "a b 1 2")
+        self.assertEqual(make_title("2 * 3 * 4 and snake_case_name"), "2 * 3 * 4 and snake_case_name")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 """SQLite persistence for sessions and messages."""
 
 import json
+import re
 import secrets
 import sqlite3
 from dataclasses import dataclass, field
@@ -202,8 +203,31 @@ class Message:
     attachments: list = field(default_factory=list)
 
 
+def plain_text(markdown):
+    """Markdown as the words alone: no fences, markers, emphasis or link targets."""
+    lines = []
+    for line in markdown.replace("\r", "").split("\n"):
+        line = line.strip()
+        if re.fullmatch(r"(```|~~~).*|([-*_])(\s*\2){2,}|\|?[\s:|-]+\|?", line):
+            continue                                 # a fence, a rule or a table's divider
+        line = re.sub(r"^((#{1,6}|>|[-*+]|\d+[.)])\s+)+", "", line)   # headings, quotes, items
+        line = re.sub(r"^\||\|$", "", line).replace("|", " ")          # table cells
+        line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)           # a link's text
+        line = re.sub(r"(\*\*|__|~~|`)(.+?)\1", r"\2", line)           # bold, strike, code
+        line = re.sub(r"(?<![\w*])[*_](?=\S)(.+?)(?<=\S)[*_](?![\w*])", r"\1", line)  # italics
+        lines.append(line)
+    return " ".join(" ".join(lines).split())
+
+
 def first_message_title(text, width=60):
-    """The automatic title a session gets from its first message."""
+    """The automatic title a session gets from its first message: its words, without markdown."""
+    text = plain_text(text)
+    return text if len(text) <= width else text[:width - 1].rstrip() + "…"
+
+
+def _raw_title(text, width=60):
+    """The automatic title as it was made before markdown was stripped, so the migration
+    still knows an old session's title for automatic."""
     text = " ".join(text.split())
     return text if len(text) <= width else text[:width - 1].rstrip() + "…"
 
@@ -263,7 +287,9 @@ class Store:
                                       AND m.role = 'user' ORDER BY seq LIMIT 1) AS first
                FROM sessions s WHERE s.title IS NOT NULL""").fetchall()
         for row in rows:
-            automatic = row["first"] is not None and row["title"] == first_message_title(row["first"])
+            # Older versions titled with the raw first message, markdown and all.
+            automatic = row["first"] is not None and row["title"] in (
+                first_message_title(row["first"]), _raw_title(row["first"]))
             self.db.execute("UPDATE sessions SET title_source = ? WHERE id = ?",
                             ("auto" if automatic else "user", row["id"]))
 
