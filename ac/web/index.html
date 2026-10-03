@@ -54,6 +54,7 @@ button { font: inherit; cursor: pointer; }
                    text-overflow: ellipsis; }
 #sessions .meta { display: block; font-size: 12px; color: var(--muted); }
 #sessions .empty { padding: 10px; color: var(--muted); font-size: 14px; }
+#sessions .initial { display: none; }
 
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 #main > header { padding: 14px 24px; border-bottom: 1px solid var(--line); }
@@ -95,8 +96,19 @@ body.header-collapsed .meta-row, body.header-collapsed .controls { display: none
 #sidebar-toggle svg { transition: transform .15s; }
 /* Collapsed, the list keeps a narrow rail: new chat, search, and the way back out. */
 body.sidebar-collapsed #sidebar { width: 64px; }
-body.sidebar-collapsed #sidebar header, body.sidebar-collapsed #sessions { display: none; }
-body.sidebar-collapsed .rail { display: flex; }
+body.sidebar-collapsed #sidebar header { display: none; }
+body.sidebar-collapsed .rail { display: flex; flex: none; order: -1; padding-bottom: 6px; }
+/* ...and each session as its initial, to switch between them without opening the list. */
+@media (min-width: 721px) {
+  body.sidebar-collapsed #sessions { padding: 4px 0 12px; display: flex; flex-direction: column;
+                                     align-items: center; gap: 6px; }
+  body.sidebar-collapsed #sessions li:not(:has(a)) { display: none; }
+  body.sidebar-collapsed #sessions li a { width: 40px; height: 40px; padding: 0; border-radius: 12px;
+                                          display: flex; align-items: center; justify-content: center; }
+  body.sidebar-collapsed #sessions li a[aria-current] { color: var(--accent); }
+  body.sidebar-collapsed #sessions .title, body.sidebar-collapsed #sessions .meta { display: none; }
+  body.sidebar-collapsed #sessions .initial { display: block; font-size: 16px; font-weight: 600; }
+}
 body.sidebar-collapsed #sidebar footer { justify-content: center; }
 body.sidebar-collapsed #sidebar-toggle svg { transform: rotate(180deg); }
 #main > header .meta { font-size: 13px; color: var(--muted); }
@@ -472,7 +484,8 @@ async function loadSessions() {
   const { sessions, archived_count } = await api("/sessions" + (params.size ? "?" + params : ""));
   const list = $("#sessions");
   list.replaceChildren(...sessions.map((s) => el("li", {},
-    el("a", { href: "#" + s.id, "data-id": s.id },
+    el("a", { href: "#" + s.id, "data-id": s.id, title: s.title || "(untitled)" },
+       el("span", { class: "initial", "aria-hidden": "true" }, initial(s.title)),
        el("span", { class: "title" }, s.title || "(untitled)"),
        el("span", { class: "meta" }, `${when(s.updated_at)} · ${s.message_count} messages · ${s.model}`)))));
   if (viewArchived) list.prepend(el("li", { class: "viewing" }, "Archived"));
@@ -483,6 +496,12 @@ async function loadSessions() {
   link.textContent = viewArchived ? "‹ Active sessions" : "Archived";
   $("#search").placeholder = viewArchived ? "Search archived" : "Search sessions";
   markCurrent();
+}
+
+// The rail's icon for a session: its title's first letter or digit, or failing that its first character.
+function initial(title) {
+  const t = (title || "").trim();
+  return (t.match(/[\p{L}\p{N}]/u) || [...t])[0]?.toUpperCase() || "?";
 }
 
 function showArchived(on) {
