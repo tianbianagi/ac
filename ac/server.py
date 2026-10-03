@@ -637,7 +637,11 @@ class Handler(BaseHTTPRequestHandler):
                 models = self.client.list_models()
             except OllamaError as e:
                 return self._error(502, str(e))
-            return self._json({"models": [
+            try:
+                default = pick_model(self.client)
+            except OllamaError:
+                default = None
+            return self._json({"default": default, "models": [
                 {"name": m["name"], "size": m.get("size"),
                  "parameter_size": (m.get("details") or {}).get("parameter_size")}
                 for m in models]})

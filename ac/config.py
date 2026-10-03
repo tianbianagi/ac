@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 APP = "ac"
 COMMAND = "acc"  # not "ac": macOS ships an unrelated /usr/sbin/ac
-DEFAULT_MODEL = "qwen3.8:27b"
+DEFAULT_MODEL = "qwen3.5:122b"
 
 
 def _xdg(var, fallback):

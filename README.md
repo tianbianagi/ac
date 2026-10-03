@@ -165,7 +165,7 @@ are dropped, and if another session already owns the name, the session id is app
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
-| `AC_MODEL` | model for new sessions | `qwen3.8:27b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
+| `AC_MODEL` | model for new sessions | `qwen3.5:122b` (`DEFAULT_MODEL` in `ac/config.py`); first installed model if that is missing |
 | `AC_SKILLS_PATH` | the owner's extra skill directories (`:`-separated), searched first | |
 | `AC_CONFIG_DIR` | folder holding `config.toml` and `users/` | `~/accspace/config` |
 | `AC_DB` | session database | `~/.local/share/ac/ac.db` |

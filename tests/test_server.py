@@ -463,6 +463,7 @@ class ServerTest(unittest.TestCase):
     def test_models_and_skills(self):
         _, body = self.get("/api/models")
         self.assertEqual([m["name"] for m in body["models"]], ["m1", "m2:latest"])
+        self.assertEqual(body["default"], "m1")       # DEFAULT_MODEL isn't installed: the first is
         write_skill(Path(os.environ["AC_SKILLS_PATH"]), "haiku", description="Poetry mode")
         _, body = self.get("/api/skills")
         self.assertEqual(body, {"skills": [{"name": "haiku", "description": "Poetry mode"}],

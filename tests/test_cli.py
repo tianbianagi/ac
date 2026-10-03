@@ -66,7 +66,7 @@ class CliTest(unittest.TestCase):
         self.fake.models.append(config.DEFAULT_MODEL)
         self.ac("ask", "-m", "m2", "a session on another model")
         self.ac("ask", "new sessions still start on the default")
-        self.assertEqual(self.fake.requests[-1]["model"], "qwen3.8:27b")
+        self.assertEqual(self.fake.requests[-1]["model"], "qwen3.5:122b")
         with mock.patch.dict(os.environ, {"AC_MODEL": "m2"}):
             self.ac("ask", "the environment overrides it")
             self.assertEqual(self.fake.requests[-1]["model"], "m2:latest")

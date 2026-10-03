@@ -451,7 +451,7 @@ function markdown(src) {
 
 let current = null, searchTimer = null, streaming = null, quietHash = false;
 let session = null;                       // the open session, as the server last described it
-let models = [], allSkills = [];
+let models = [], defaultModel = "", allSkills = [];
 // Choices for a new chat, until its first message.
 const draft = { model: "", skills: [] };
 let pending = [];                         // files to go with the next message: {name, data, size}
@@ -515,15 +515,14 @@ function showHeader(s) {
 const skillName = (ref) => ref.replace(/\/SKILL\.md$/, "").split("/").pop().replace(/\.md$/, "");
 
 function showControls() {
-  const chosen = session ? session.model : draft.model;
+  const chosen = session ? session.model : draft.model || defaultModel;
   const names = models.map((m) => m.name);
   const options = [];
-  if (!session) options.push(el("option", { value: "" }, "Default model"));
   if (chosen && !names.includes(chosen)) options.push(el("option", { value: chosen }, `${chosen} (not installed)`));
   for (const m of models)
     options.push(el("option", { value: m.name }, m.parameter_size ? `${m.name} · ${m.parameter_size}` : m.name));
   $("#model").replaceChildren(...options);
-  $("#model").value = chosen || "";
+  $("#model").value = chosen;
   $("#session-actions").hidden = !session;
   $("#rename-btn").hidden = !session;
   if (session) {
@@ -581,7 +580,10 @@ function fillSkills() {
 }
 
 async function loadChoices() {
-  try { models = (await api("/models")).models; } catch (e) { models = []; }
+  try {
+    ({ models, default: defaultModel } = await api("/models"));
+    defaultModel = defaultModel || "";
+  } catch (e) { models = []; defaultModel = ""; }
   try { takeSkills(await api("/skills")); } catch (e) { allSkills = []; }
   showControls();
 }
@@ -1206,7 +1208,7 @@ async function send(request) {
   }
   const body = { session: current, ...rest };
   if (files?.length) body.files = files.map((f) => ({ name: f.name, data: f.data }));
-  if (!current) Object.assign(body, { model: draft.model || null, skills: draft.skills });
+  if (!current) Object.assign(body, { model: draft.model || defaultModel || null, skills: draft.skills });
   try {
     const res = await fetch("/api/chat", {
       method: "POST", signal: mine.ctrl.signal, headers: { "Content-Type": "application/json" },
